@@ -88,7 +88,7 @@ export const WOR_APP_CSS = `
   .wor-chapter-divider { border: 0; height: 1px; background: color-mix(in srgb, var(--wor-text) 22%, transparent); margin: 10px 0 26px; }
 
   /* Keep native text selection and copy available on the reading surface. */
-  .wor-reader-text-surface, .wor-reader-text-surface *, .wor-chapter-title-block, .wor-chapter-sec {
+  #worTextSurface, #worTextSurface *, .wor-chapter-title-block, .wor-chapter-sec {
     -webkit-user-select: text !important; user-select: text !important; -webkit-touch-callout: default !important;
   }
   .moon-copyright-notice { pointer-events: none; }

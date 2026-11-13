@@ -669,9 +669,9 @@ export class TranslationController {
 
     const lines = [
       ...new Set(
-        ctx.lines
-          .map(line => line.trim())
-          .filter(line => line.length > 0 && !isImageOnlyBlock(line)),
+        ctx.lines.filter(
+          line => line.trim().length > 0 && !isImageOnlyBlock(line),
+        ),
       ),
     ];
     if (lines.length === 0) {

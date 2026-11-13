@@ -1750,7 +1750,7 @@ function bridgeScript() {
     var known = trElIds.get(p);
     if (known) { trById.set(known, p); return known; }
     if (p.classList.contains('wor-image-p')) return null;
-    var text = String(p.textContent || '');
+    var text = String(p.getAttribute('data-wor-source') || p.textContent || '');
     if (!text.trim() || !TR_HAS_LETTER.test(text)) return null;
     var id = 'tr' + ch + ':' + (++TR.serial);
     trElIds.set(p, id);
@@ -1816,7 +1816,7 @@ function bridgeScript() {
         var t = trTierOf(p.getBoundingClientRect(), 0, vp.height);
         out.push({
           id: id,
-          text: String(p.textContent || ''),
+          text: String(p.getAttribute('data-wor-source') || p.textContent || ''),
           sec: ch,
           tier: t.tier,
           distance: Math.round(t.distance)

@@ -136,6 +136,20 @@ async function main() {
     await page.waitForFunction(() =>
       document.querySelector('[data-wor-tr-text]'),
     );
+    // Decorative quote styles must not alter the text used by translation
+    // memory: prefetched raw paragraphs must match foreground collection.
+    await receive({
+      kind: 'settings',
+      settings: { selectedBracketStyle: 'guillemets' },
+    });
+    await page.evaluate(() => {
+      window.moonMessages = [];
+    });
+    await receive({ kind: 'trCollect' });
+    const rawBatch = await page.evaluate(() =>
+      window.moonMessages.find(message => message.t === 'trCollect'),
+    );
+    assert(rawBatch.segments.every(segment => !segment.text.includes('«')));
     assert.equal(
       await page.locator('[data-wor-tr-text] .bracket-formatted').count(),
       1,

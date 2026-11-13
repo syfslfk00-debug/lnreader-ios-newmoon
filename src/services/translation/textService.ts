@@ -66,20 +66,30 @@ export const splitCloudflareText = (text: string, limit: number): string[] => {
   return parts;
 };
 
-const units = (text: string, engine: TranslationPreferences['engine']): number =>
-  engine === 'cloudflare' ? text.length : Array.from(text).length;
+const units = (
+  text: string,
+  engine: TranslationPreferences['engine'],
+): number => (engine === 'cloudflare' ? text.length : Array.from(text).length);
 
-const characterLimit = (prefs: TranslationPreferences, override?: number): number => {
+const characterLimit = (
+  prefs: TranslationPreferences,
+  override?: number,
+): number => {
   if (override !== undefined && prefs.engine === 'ai') return override;
   if (prefs.engine === 'cloudflare') {
-    return prefs.cloudflare?.model.includes('llama-3.3') === true ? 16_000 : 24_000;
+    return prefs.cloudflare?.model.includes('llama-3.3') === true
+      ? 16_000
+      : 24_000;
   }
   if (usesAIBatches(prefs)) return 24_000;
   if (prefs.engine === 'googleWeb') return 12_000;
   return 5_000;
 };
 
-const itemLimit = (prefs: TranslationPreferences, override?: number): number => {
+const itemLimit = (
+  prefs: TranslationPreferences,
+  override?: number,
+): number => {
   if (override !== undefined && prefs.engine === 'ai') return override;
   if (usesAIBatches(prefs)) return 256;
   if (prefs.engine === 'googleWeb') return 96;
@@ -96,6 +106,8 @@ export interface TranslateBatchContext {
   limits?: { characterLimit?: number; itemLimit?: number };
   // v3 streaming (openAI-compatible only): incremental completed items as
   // the JSON array is being generated; applied + saved progressively.
+  signal?: AbortSignal;
+  onRequest?: () => void;
   stream?: boolean;
   onPartial?: (item: TranslationSegment) => void;
 }
@@ -119,11 +131,16 @@ export const translateSegments = async (
       case 'cloudflare':
         parts = splitCloudflareText(
           item.text,
-          prefs.cloudflare?.model.includes('llama-3.3') === true ? 16_000 : 24_000,
+          prefs.cloudflare?.model.includes('llama-3.3') === true
+            ? 16_000
+            : 24_000,
         );
         break;
       default:
-        parts = splitText(item.text, usesAIBatches(prefs) ? 24_000 : 1800);
+        parts =
+          prefs.engine === 'ai' && context.limits
+            ? [item.text]
+            : splitText(item.text, usesAIBatches(prefs) ? 24_000 : 1800);
         break;
     }
     keys[item.id] = [];
@@ -142,7 +159,8 @@ export const translateSegments = async (
   for (const part of flattened) {
     if (
       batch.length > 0 &&
-      (size + units(part.text, prefs.engine) > limit || batch.length >= countLimit)
+      (size + units(part.text, prefs.engine) > limit ||
+        batch.length >= countLimit)
     ) {
       batches.push(batch);
       batch = [];
@@ -153,16 +171,45 @@ export const translateSegments = async (
   }
   if (batch.length > 0) batches.push(batch);
 
+  if (prefs.engine === 'ai' && context.limits && batches.length > 1) {
+    throw new TranslationFailure(
+      'تجاوز الجزء المخطط حد الطلب الواحد؛ لم يُرسل إلى المزود.',
+    );
+  }
+  const originalPartial = context.onPartial;
+  const pieces = new Map<string, string>();
+  const expandedToOriginal = new Map<string, string>();
+  for (const [id, parts] of Object.entries(keys)) {
+    for (const key of parts) expandedToOriginal.set(key, id);
+  }
+  const mappedContext = {
+    ...context,
+    onPartial: originalPartial
+      ? (item: TranslationSegment) => {
+          const id = expandedToOriginal.get(item.id);
+          if (!id) return;
+          pieces.set(item.id, item.text);
+          let text = '';
+          for (const key of keys[id]) {
+            if (!pieces.has(key)) break;
+            text += pieces.get(key);
+          }
+          if (text) originalPartial({ id, text });
+        }
+      : undefined,
+  };
   let output: TranslationSegment[] = [];
   if (usesAIBatches(prefs)) {
     // Account chat contexts must advance in sequence (Zeus comment preserved).
     for (const one of batches) {
-      output = output.concat(await translateBatch(one, context));
+      output = output.concat(await translateBatch(one, mappedContext));
     }
   } else {
     // Google accepts an array per request. Three bounded batches can be in
     // flight; results reassemble in the original order (Zeus task group).
-    const results: (TranslationSegment[] | null)[] = new Array(batches.length).fill(null);
+    const results: (TranslationSegment[] | null)[] = new Array(
+      batches.length,
+    ).fill(null);
     let next = 0;
     const workers = new Array(Math.min(3, batches.length))
       .fill(0)
@@ -170,7 +217,7 @@ export const translateSegments = async (
         while (next < batches.length) {
           const index = next;
           next += 1;
-          results[index] = await translateBatch(batches[index], context);
+          results[index] = await translateBatch(batches[index], mappedContext);
         }
       });
     await Promise.all(workers);
@@ -203,14 +250,21 @@ const translateBatch = async (
     case 'microsoftVisco':
       return translateVisco(segments, prefs.target);
     case 'cloudflare':
-      return translateCloudflare(segments, prefs.target, prefs.cloudflare, secret);
+      return translateCloudflare(
+        segments,
+        prefs.target,
+        prefs.cloudflare,
+        secret,
+      );
     case 'googleCloud': {
       if (!secret) {
         throw new TranslationFailure(
           'أضف مفتاح Google Cloud Translation في إعدادات الترجمة، أو اختر خدمة Google للويب.',
         );
       }
-      const url = validateEndpoint('https://translation.googleapis.com/language/translate/v2');
+      const url = validateEndpoint(
+        'https://translation.googleapis.com/language/translate/v2',
+      );
       const value = (await httpObject(url.toString(), {
         method: 'POST',
         body: JSON.stringify({
@@ -222,7 +276,9 @@ const translateBatch = async (
       })) as { data?: { translations?: { translatedText?: string }[] } };
       const rows = value?.data?.translations ?? [];
       if (rows.length !== segments.length) {
-        throw new TranslationFailure('استجابة Google لا تطابق عدد النصوص؛ لم تُطبّق هذه الدفعة.');
+        throw new TranslationFailure(
+          'استجابة Google لا تطابق عدد النصوص؛ لم تُطبّق هذه الدفعة.',
+        );
       }
       return segments.map((item, index) => {
         const translated = rows[index]?.translatedText;
@@ -231,18 +287,27 @@ const translateBatch = async (
       });
     }
     case 'googleWeb': {
-      const response = await httpObject(googleBatchUrl(prefs.target).toString(), {
-        method: 'POST',
-        body: encodeFormValues(segments.map(row => ['q', row.text])),
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-      });
+      const response = await httpObject(
+        googleBatchUrl(prefs.target).toString(),
+        {
+          method: 'POST',
+          body: encodeFormValues(segments.map(row => ['q', row.text])),
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+          },
+        },
+      );
       return parseGoogleBatch(response, segments);
     }
     case 'ai': {
       if (!provider) {
-        throw new TranslationFailure('أضف مزود ذكاء اصطناعي واختَره في إعدادات الترجمة أولًا.');
+        throw new TranslationFailure(
+          'أضف مزود ذكاء اصطناعي واختَره في إعدادات الترجمة أولًا.',
+        );
       }
-      const payload = JSON.stringify(segments.map(row => ({ id: row.id, text: row.text })));
+      const payload = JSON.stringify(
+        segments.map(row => ({ id: row.id, text: row.text })),
+      );
       // Verbatim prompt from TextTranslationService.swift (line 99).
       const prompt =
         `Translate each text into language code ${prefs.target}. Preserve meaning, names, numbers, whitespace and narrative style. ` +
@@ -250,42 +315,34 @@ const translateBatch = async (
         'Return ONLY a JSON array with exactly the same IDs and keys id,text, one translated text per input. ' +
         `No Markdown, commentary, HTML or omitted items. User translation style: ${provider.instruction}\n` +
         `INPUT_JSON:\n${payload}`;
-      const wantsStream = context.stream === true && provider.kind === 'openAICompatible';
+      const wantsStream =
+        context.stream === true &&
+        (provider.kind === 'openAICompatible' || provider.kind === 'geminiAPI');
       if (wantsStream) {
         // v3 instant translation: completed {id,text} objects are surfaced as
         // the array streams in; the caller applies + saves them right away.
-        const partials: TranslationSegment[] = [];
-        const seen = new Set<string>();
+        const seen = new Map<string, string>();
         const response = await generateWithProvider(prompt, provider, secret, {
           stream: true,
+          signal: context.signal,
+          onRequest: context.onRequest,
           onPartialItem: item => {
-            if (seen.has(item.id)) return;
-            seen.add(item.id);
-            partials.push(item);
+            if (
+              !segments.some(row => row.id === item.id) ||
+              seen.get(item.id) === item.text
+            ) {
+              return;
+            }
+            seen.set(item.id, item.text);
             context.onPartial?.(item);
           },
         });
-        try {
-          return validateAIResponse(response, segments);
-        } catch (error) {
-          // Stream fell short of a parseable full array: accept the streamed
-          // items ONLY if they cover the batch completely and validly —
-          // never present a partial translation as success.
-          const complete =
-            partials.length === segments.length &&
-            segments.every(segment => {
-              const row = partials.find(partial => partial.id === segment.id);
-              return row !== undefined && row.text.trim().length > 0;
-            });
-          if (complete) {
-            return segments.map(
-              segment => partials.find(partial => partial.id === segment.id)!,
-            );
-          }
-          throw error;
-        }
+        return validateAIResponse(response, segments);
       }
-      const response = await generateWithProvider(prompt, provider, secret);
+      const response = await generateWithProvider(prompt, provider, secret, {
+        signal: context.signal,
+        onRequest: context.onRequest,
+      });
       return validateAIResponse(response, segments);
     }
     default:
@@ -318,10 +375,12 @@ export const parseGoogleBatch = (
       typeof value === 'string'
         ? value
         : Array.isArray(value)
-          ? (value[0] as string | undefined)
-          : undefined;
+        ? (value[0] as string | undefined)
+        : undefined;
     if (!text) {
-      throw new TranslationFailure('أعاد Google ترجمة ناقصة؛ بقي الأصل دون تغيير.');
+      throw new TranslationFailure(
+        'أعاد Google ترجمة ناقصة؛ بقي الأصل دون تغيير.',
+      );
     }
     return { id: item.id, text };
   });

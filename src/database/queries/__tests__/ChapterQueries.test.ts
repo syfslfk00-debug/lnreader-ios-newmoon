@@ -1,3 +1,4 @@
+import NativeFile from '@modules/native-file';
 /**
  * Tests for ChapterQueries
  *
@@ -520,6 +521,31 @@ describe('ChapterQueries', () => {
   describe('deleteChapters', () => {
     it('should handle empty array', async () => {
       await expect(deleteChapters('test-plugin', 1, [])).resolves.not.toThrow();
+    });
+
+    it('updates flags only for files that were actually deleted', async () => {
+      const testDb = getTestDb();
+      const novelId = await insertTestNovel(testDb, {
+        inLibrary: true,
+        pluginId: 'test-plugin',
+      });
+      const first = await insertTestChapter(testDb, novelId, {
+        isDownloaded: true,
+      });
+      const second = await insertTestChapter(testDb, novelId, {
+        isDownloaded: true,
+      });
+      jest.mocked(NativeFile.exists).mockResolvedValue(true);
+      jest
+        .mocked(NativeFile.unlink)
+        .mockRejectedValueOnce(new Error('locked'))
+        .mockResolvedValueOnce(undefined);
+      await expect(
+        deleteChapters('test-plugin', novelId, [first, second]),
+      ).rejects.toThrow();
+      const chapters = await getNovelChapters(novelId);
+      expect(chapters.find(row => row.id === first)?.isDownloaded).toBe(true);
+      expect(chapters.find(row => row.id === second)?.isDownloaded).toBe(false);
     });
 
     it('should delete multiple chapters', async () => {

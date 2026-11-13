@@ -1,3 +1,4 @@
+import { validateLocalBackup } from '../validateLocalBackup';
 import {
   CACHE_DIR_PATH,
   clearBackupCache,
@@ -27,8 +28,15 @@ import { resolveBackupOptions, type BackupOptions } from '../options';
 export const createBackup = async (
   {
     destinationUri,
+    exportName,
+    automatic,
     options: requestedOptions,
-  }: { destinationUri: string; options?: BackupOptions },
+  }: {
+    destinationUri?: string;
+    exportName?: string;
+    automatic?: boolean;
+    options?: BackupOptions;
+  },
   setMeta?: TaskProgressUpdater,
 ) => {
   try {
@@ -73,7 +81,24 @@ export const createBackup = async (
       progressText: getString('backupScreen.savingBackup'),
     }));
 
-    await NativeFile.copyFile(CACHE_DIR_PATH + '.zip', destinationUri);
+    if (exportName) {
+      await NativeFile.exportFile(CACHE_DIR_PATH + '.zip', exportName);
+    } else if (automatic && destinationUri) {
+      const name = `lnreader_backup_${new Date()
+        .toISOString()
+        .replace(/[:.]/g, '-')}.zip`;
+      await NativeFile.copyFileToDirectory(
+        CACHE_DIR_PATH + '.zip',
+        destinationUri,
+        name,
+        'application/zip',
+        false,
+      );
+    } else if (destinationUri) {
+      await NativeFile.copyFile(CACHE_DIR_PATH + '.zip', destinationUri);
+    } else {
+      throw new Error('Backup destination is missing');
+    }
 
     const completionText = getBackupCompletionText(backupResult);
     setMeta?.(meta => ({
@@ -126,6 +151,7 @@ export const restoreBackup = async (
 
     await sleep(200);
 
+    await validateLocalBackup(CACHE_DIR_PATH);
     const restoreResult = await restoreData(CACHE_DIR_PATH, setMeta);
 
     setMeta?.(meta => ({

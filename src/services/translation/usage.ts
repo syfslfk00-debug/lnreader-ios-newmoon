@@ -12,7 +12,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 export interface TranslationUsageSnapshot {
   // All-time counters.
-  requests: number; // provider generation calls (successful attempts billed)
+  requests: number; // provider generation attempts, including failures
   requestsFailed: number;
   inputChars: number;
   outputChars: number;
@@ -64,7 +64,7 @@ interface ProviderUsage {
   completionTokens?: number;
 }
 
-// Called by providers after ONE successful generation call. `usage` is null
+// Records output after a successful call; attempts are reserved at dispatch. `usage` is null
 // when the provider did not report token counts.
 export const recordAIRequest = (
   inputChars: number,
@@ -77,8 +77,6 @@ export const recordAIRequest = (
     snapshot.dayKey = day;
     snapshot.requestsToday = 0;
   }
-  snapshot.requests += 1;
-  snapshot.requestsToday += 1;
   snapshot.inputChars += inputChars;
   snapshot.outputChars += outputChars;
   if (usage && (usage.promptTokens || usage.completionTokens)) {
@@ -86,6 +84,18 @@ export const recordAIRequest = (
     snapshot.promptTokens += usage.promptTokens ?? 0;
     snapshot.completionTokens += usage.completionTokens ?? 0;
   }
+  save(snapshot);
+};
+
+export const recordAIRequestStarted = (): void => {
+  const snapshot = load();
+  const day = todayKey();
+  if (snapshot.dayKey !== day) {
+    snapshot.dayKey = day;
+    snapshot.requestsToday = 0;
+  }
+  snapshot.requests += 1;
+  snapshot.requestsToday += 1;
   save(snapshot);
 };
 

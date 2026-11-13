@@ -28,6 +28,7 @@
 //   rn -> web : injectJavaScript('window.__wor.receive(<json>)')
 
 import WOR_CSS from './worCSS';
+import { LINE_FORMATTER_SOURCE } from './formatterSource';
 import { WOR_FONTS, WOR_FONT_FACES } from './worFonts';
 
 // ---------------------------------------------------------------------------
@@ -86,9 +87,9 @@ export const WOR_APP_CSS = `
   .wor-app-copyright { line-height: 1.6; padding: 14px 0; margin: 8px 0; }
   .wor-chapter-divider { border: 0; height: 1px; background: color-mix(in srgb, var(--wor-text) 22%, transparent); margin: 10px 0 26px; }
 
-  /* ---- 🛡️ anti-copy: سطح القراءة غير قابل للتحديد (الحقول والداخل مستثناة) ---- */
-  .wor-reader-text-surface, .wor-chapter-title-block, .wor-chapter-sec {
-    -webkit-user-select: none; user-select: none;
+  /* Keep native text selection and copy available on the reading surface. */
+  #worTextSurface, #worTextSurface *, .wor-chapter-title-block, .wor-chapter-sec {
+    -webkit-user-select: text !important; user-select: text !important; -webkit-touch-callout: default !important;
   }
   .moon-copyright-notice { pointer-events: none; }
 
@@ -349,6 +350,7 @@ function bridgeScript() {
   'use strict';
   // ============================ state ============================
   var S = '__WOR_SETTINGS__';
+  var formatLine = '__WOR_FORMATTER__';
   var USER = '__WOR_USER__';
   var FONTS = '__WOR_FONTS__';
   var BG_PRESETS = '__WOR_BG_PRESETS__';
@@ -375,6 +377,7 @@ function bridgeScript() {
   var customColors = false;
   var pickers = {};
   var pendingScroll = 0;
+  var restoreEpoch = 0;
 
   // ============================ helpers ============================
   function $(sel, root) { try { return (root || document).querySelector(sel); } catch (e) { return null; } }
@@ -1747,7 +1750,7 @@ function bridgeScript() {
     var known = trElIds.get(p);
     if (known) { trById.set(known, p); return known; }
     if (p.classList.contains('wor-image-p')) return null;
-    var text = String(p.textContent || '');
+    var text = String(p.getAttribute('data-wor-source') || p.textContent || '');
     if (!text.trim() || !TR_HAS_LETTER.test(text)) return null;
     var id = 'tr' + ch + ':' + (++TR.serial);
     trElIds.set(p, id);
@@ -1797,21 +1800,23 @@ function bridgeScript() {
     if (!surface) return [];
     var secs = $all('section.wor-chapter-sec[data-ch]', surface);
     var vp = trViewport();
+    var activeChapter = TR.caps ? activeSectionAt(window.scrollY || 0).num : 0;
     var out = [];
     for (var i = 0; i < secs.length; i++) {
       var sec = secs[i];
       if (sec.getAttribute('data-wor-unloaded')) continue; // stashed shell
       var ch = parseInt(sec.getAttribute('data-ch'), 10) || 0;
+      if (activeChapter && ch !== activeChapter) continue;
       var ps = trSectionParagraphs(sec);
       for (var j = 0; j < ps.length; j++) {
         var p = ps[j];
         if (p.getAttribute('data-wor-tr')) continue; // already translated
         var id = trRegisterP(p, ch);
         if (!id) continue;
-        var t = trTierOf(p.getBoundingClientRect(), vp.top, vp.height);
+        var t = trTierOf(p.getBoundingClientRect(), 0, vp.height);
         out.push({
           id: id,
-          text: String(p.textContent || ''),
+          text: String(p.getAttribute('data-wor-source') || p.textContent || ''),
           sec: ch,
           tier: t.tier,
           distance: Math.round(t.distance)
@@ -1832,12 +1837,12 @@ function bridgeScript() {
     var cands = trCandidates();
     var empty = { chapter: 0, segments: [], tier: 2, more: false };
     if (!cands.length) return empty;
-    cands.sort(function (a, b) { return a.tier - b.tier || a.distance - b.distance; });
-    var pool = prioritize
+    if (!TR.caps) cands.sort(function (a, b) { return a.tier - b.tier || a.distance - b.distance; });
+    var pool = prioritize && !TR.caps
       ? cands.filter(function (c) { return c.tier === cands[0].tier; })
       : cands;
-    var maxChars = prioritize ? 24000 : (TR.caps ? TR.caps.maxCharacters : 10000);
-    var maxSegs = prioritize ? 256 : (TR.caps ? TR.caps.maxSegments : 64);
+    var maxChars = TR.caps ? Infinity : (prioritize ? 24000 : 10000);
+    var maxSegs = TR.caps ? Infinity : (prioritize ? 256 : 64);
     var segments = [];
     var chars = 0;
     var firstSec = pool[0].sec;
@@ -1885,7 +1890,25 @@ function bridgeScript() {
   // equivalent): items whose section data-ch differs are skipped. Original
   // markup is stashed once per paragraph in trOrig (module-level Map keyed by
   // id); translated text goes in via textContent — NEVER innerHTML.
+  var trPendingApply = new Map();
+  var trApplyTimer = 0;
   function trApplyItems(items, expected) {
+    for (var i = 0; i < items.length; i++) trPendingApply.set(items[i].id, { item: items[i], expected: expected });
+    if (trApplyTimer) return;
+    trApplyTimer = setTimeout(function flushApply() {
+      if (!touchIdleForAnchoring()) { trApplyTimer = setTimeout(flushApply, 120); return; }
+      trApplyTimer = 0;
+      var groups = new Map();
+      trPendingApply.forEach(function (row) {
+        var group = groups.get(row.expected) || [];
+        group.push(row.item);
+        groups.set(row.expected, group);
+      });
+      trPendingApply.clear();
+      groups.forEach(function (group, chapter) { trApplyNow(group, chapter); });
+    }, 80);
+  }
+  function trApplyNow(items, expected) {
     var applied = 0;
     for (var i = 0; i < items.length; i++) {
       var it = items[i] || {};
@@ -1898,22 +1921,28 @@ function bridgeScript() {
         trEvictOrig();
         el.setAttribute('data-wor-tr', '1');
       }
-      el.textContent = it.text == null ? '' : String(it.text);
+      el.setAttribute('data-wor-tr-text', it.text == null ? '' : String(it.text));
+      el.innerHTML = formatLine(it.text == null ? '' : String(it.text), S);
       if (trIsRtlTarget()) el.setAttribute('dir', 'rtl');
       applied++;
     }
+    if (applied) invalidateSectionTops();
     send({ t: 'trApplied', chapter: expected, applied: applied });
   }
   // Full restore: the saved originals are the app's own previously rendered
   // markup, so putting them back via innerHTML is safe. Paragraphs whose
   // element disappeared just drop their saved original.
   function trRestoreAll() {
+    clearTimeout(trApplyTimer);
+    trApplyTimer = 0;
+    trPendingApply.clear();
     trOrig.forEach(function (html, id) {
       var el = trById.get(id);
       if (el && el.isConnected) {
-        el.innerHTML = html;
+        el.innerHTML = el.hasAttribute('data-wor-source') ? formatLine(el.getAttribute('data-wor-source'), S) : html;
         el.removeAttribute('dir');
         el.removeAttribute('data-wor-tr');
+        el.removeAttribute('data-wor-tr-text');
       }
       trOrig.delete(id);
     });
@@ -1931,6 +1960,9 @@ function bridgeScript() {
   // Chapter swap: every old element is gone, so drop all registration state
   // and stop any running round (RN decides whether to offer again).
   function trResetForChapter() {
+    clearTimeout(trApplyTimer);
+    trApplyTimer = 0;
+    trPendingApply.clear();
     trById.clear();
     trElIds = new WeakMap();
     trOrig.clear();
@@ -2082,8 +2114,14 @@ function bridgeScript() {
         for (var k in msg.settings) if (Object.prototype.hasOwnProperty.call(msg.settings, k)) S[k] = msg.settings[k];
         if (msg.settings.customColors !== undefined) customColors = !!msg.settings.customColors;
         applySettingsUI();
+        $all('p[data-wor-source]').forEach(function (el) {
+          var text = el.hasAttribute('data-wor-tr-text') ? el.getAttribute('data-wor-tr-text') : el.getAttribute('data-wor-source');
+          el.innerHTML = formatLine(text, S);
+        });
       }
       else if (kind === 'chapter') {
+        restoreEpoch++;
+        userTouched = false;
         CH = msg;
         favOn = !!msg.isFavorite;
         // when the chapter is re-rendered in place (formatting change), keep the
@@ -2270,19 +2308,20 @@ function bridgeScript() {
   }
 
   function restoreScroll() {
-    if (!pendingScroll || pendingScroll <= 0) return;
-    var inOffset = pendingScroll;
+    var inOffset = Math.max(0, pendingScroll || 0);
+    var ticket = ++restoreEpoch;
     // The saved offset is measured INSIDE the chapter's own section (v2), so the
     // restore target is sectionTop + inOffset. Old v1 saves stored a global
     // offset — those are simply clamped to the page maximum.
     function go() {
-      if (userTouched) return; // never fight the reader's own finger
+      if (ticket !== restoreEpoch || userTouched) return;
       var sec = (CH && CH.number != null) ? document.querySelector('.wor-chapter-sec[data-ch="' + CH.number + '"]') : null;
       var top = sec ? sec.offsetTop : 0;
       var doc = document.documentElement;
       var maxY = Math.max(0, doc.scrollHeight - window.innerHeight);
-      window.scrollTo(0, Math.min(top + inOffset, maxY));
+      window.scrollTo(0, inOffset === 0 ? 0 : Math.min(top + inOffset, maxY));
     }
+    if (inOffset === 0) go();
     setTimeout(go, 60);
     setTimeout(go, 320);
     setTimeout(go, 900);
@@ -2290,39 +2329,6 @@ function bridgeScript() {
   }
 
   window.__wor = { receive: receive, send: send, setDock: setDock, toast: toast };
-
-  // ============================ 🛡️ حماية النصوص (anti-copy) ============================
-  // منع النسخ/القص/قائمة الزر الأيمن/السحب على سطح القراءة — مع استثناء حقول
-  // الإدخال في الدرج (بحث/كلمات الاستبدال).
-  // 🔕 الحماية صامتة تماماً بلا أي تنبيهات — حُذفت تحذيرات النسخ بطلب المستخدم.
-  (function guardCopy() {
-    var allowed = function (el) {
-      return !!(el && el.closest && el.closest('input, textarea, [contenteditable="true"], [data-allow-copy]'));
-    };
-    var inSurface = function (el) {
-      return !!(el && el.closest && el.closest('.wor-reader-text-surface, .wor-chapter-sec, .wor-chapter-title-block'));
-    };
-    document.addEventListener('contextmenu', function (e) {
-      if (allowed(e.target)) return;
-      if (inSurface(e.target)) e.preventDefault();
-    });
-    document.addEventListener('copy', function (e) {
-      if (allowed(e.target)) return;
-      var sel = document.getSelection && document.getSelection();
-      var node = sel && sel.anchorNode ? sel.anchorNode : e.target;
-      var el = node && node.nodeType === 1 ? node : (node && node.parentElement) || e.target;
-      if (inSurface(el)) {
-        e.preventDefault();
-      }
-    });
-    document.addEventListener('cut', function (e) {
-      if (allowed(e.target)) return;
-      if (inSurface(e.target)) e.preventDefault();
-    });
-    document.addEventListener('dragstart', function (e) {
-      if (inSurface(e.target)) e.preventDefault();
-    });
-  })();
 
   // ============================ boot ============================
   function measureTopbar() {
@@ -2410,6 +2416,8 @@ export function buildWorShell({
   const cover = escHtml(novelCover);
 
   const script = bridgeScript()
+    .split("'__WOR_FORMATTER__'")
+    .join(LINE_FORMATTER_SOURCE)
     .split("'__WOR_SETTINGS__'")
     .join(settingsJson)
     .split("'__WOR_USER__'")

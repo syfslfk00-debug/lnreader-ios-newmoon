@@ -1,3 +1,4 @@
+import { useWebViewScrollProbe } from '../../../testing/useWebViewScrollProbe';
 // lnreader-ios/src/screens/reader/newmoon/NewMoonReaderScreen.tsx
 //
 // RN controller for the REAL New-moon-2 reader engine (src/reader/newmoon/).
@@ -47,10 +48,7 @@ import WebView from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Speech from 'expo-speech';
 import { useNavigation, type NavigationProp } from '@react-navigation/native';
-import type {
-  ChapterScreenProps,
-  RootStackParamList,
-} from '@navigators/types';
+import type { ChapterScreenProps, RootStackParamList } from '@navigators/types';
 
 import type { StringMap } from '@i18n/types';
 import { getString } from '@i18n/translations';
@@ -107,7 +105,6 @@ import {
   fetchReaderOrderChapters,
   loadScrollOffset,
   loadWorSettings,
-  needsStructuralRebuild,
   neighborWNum,
   saveLastPosition,
   saveScrollOffset,
@@ -160,6 +157,7 @@ const NewMoonReaderScreen = ({
 }) => {
   const navigation = useNavigation<NavigationProp<RootStackParamList>>();
   const theme = useTheme();
+  const scrollProbe = useWebViewScrollProbe();
   const insets = useSafeAreaInsets();
   const novel: NovelInfo = route.params.novel;
   const initialChapter: ChapterInfo = route.params.chapter;
@@ -907,13 +905,6 @@ const NewMoonReaderScreen = ({
 
   // ------------------------------------------------------------ settings ---
   const applySettingsPatch = useCallback((patch: Record<string, unknown>) => {
-    // Engine parity: the rebuild decision compares the patch against the
-    // CURRENT settings and must run BEFORE the merge (WorReader.tsx
-    // computes needsRebuild first, then applies the patch).
-    const needsRebuild = needsStructuralRebuild(
-      patch,
-      settingsRef.current as unknown as Record<string, unknown>,
-    );
     settingsRef.current = {
       ...settingsRef.current,
       ...patch,
@@ -922,9 +913,6 @@ const NewMoonReaderScreen = ({
     bridgeRef.current.post({ kind: 'settings', settings: patch });
     if (typeof patch.keepAwake === 'boolean') {
       setKeepAwake(patch.keepAwake);
-    }
-    if (needsRebuild) {
-      rebuildCurrentRef.current();
     }
   }, []);
 
@@ -1006,9 +994,9 @@ const NewMoonReaderScreen = ({
     translationCtlRef.current?.setNavigation(routeName => {
       // 'TranslationSettings' belongs to the translation settings feature;
       // navigate defensively so an unbuilt route can never crash the reader.
-      (
-        navigation as unknown as { navigate: (name: string) => void }
-      ).navigate(routeName);
+      (navigation as unknown as { navigate: (name: string) => void }).navigate(
+        routeName,
+      );
     });
     translationCtlRef.current?.setOnCompleted(() => {
       if (
@@ -1062,7 +1050,7 @@ const NewMoonReaderScreen = ({
           novelId: novel.id,
           chapterId: chap.id,
           wNum,
-          lines: worText.split('\n\n'),
+          lines: worText.split('\n'),
         });
       }
     };
@@ -1123,13 +1111,13 @@ const NewMoonReaderScreen = ({
           // the simulator scroll-quality runs and visible in device logs.
           // eslint-disable-next-line no-console
           console.log(
-              '[moon-scroll]',
-              JSON.stringify({
-                frames: event.frames,
-                longFrames: event.longFrames,
-                maxFrameMs: event.maxFrame,
-                avgFrameMs: event.avgFrame,
-                durationMs: event.durationMs,
+            '[moon-scroll]',
+            JSON.stringify({
+              frames: event.frames,
+              longFrames: event.longFrames,
+              maxFrameMs: event.maxFrame,
+              avgFrameMs: event.avgFrame,
+              durationMs: event.durationMs,
             }),
           );
           break;
@@ -1290,7 +1278,10 @@ const NewMoonReaderScreen = ({
   // safeTop/safeBottom into S and applyTheme() rewrites --wor-safe-top/bottom
   // — a pure CSS-variable update with zero document reloads.
   useEffect(() => {
-    if (insets.top === mountInsets.top && insets.bottom === mountInsets.bottom) {
+    if (
+      insets.top === mountInsets.top &&
+      insets.bottom === mountInsets.bottom
+    ) {
       return;
     }
     bridgeRef.current.post({
@@ -1443,14 +1434,20 @@ const NewMoonReaderScreen = ({
     [initialSettings],
   );
 
+  const shellSource = useMemo(
+    () => ({ baseUrl: assetsUriPrefix, html: shellHtml }),
+    [assetsUriPrefix, shellHtml],
+  );
+
   return (
     <View
       style={[styles.container, { backgroundColor: shellTheme.background }]}
     >
       <WebView
         ref={webViewRef}
-        source={{ baseUrl: assetsUriPrefix, html: shellHtml }}
+        source={shellSource}
         style={{ backgroundColor: webViewBackground }}
+        decelerationRate="normal"
         originWhitelist={['*']}
         mixedContentMode="always"
         domStorageEnabled
@@ -1464,6 +1461,7 @@ const NewMoonReaderScreen = ({
         onRenderProcessGone={onContentProcessTerminate}
       />
 
+      {scrollProbe.probe}
       {/* Engine 'keepAwake' switch → native wake lock (same as classic). */}
       {keepAwake ? <KeepScreenAwake /> : null}
 

@@ -1,10 +1,9 @@
 name: iOS IPA Build
 
 # ---------------------------------------------------------------------------
-# ISOLATED PIPELINE: quality gate -> unsigned device IPA.
-# Contains NO simulator steps. If this workflow is green, the IPA artifact
-# is ready for download. Simulator tests live in ios-simulator-test.yml and
-# run independently (their failure never blocks IPA production).
+# Quality gate -> unsigned device IPA -> same-commit simulator verification.
+# IPA artifacts remain downloadable even when the subsequent interaction
+# tests fail. The simulator implementation is a reusable workflow.
 # ---------------------------------------------------------------------------
 
 on:
@@ -13,6 +12,7 @@ on:
     branches:
       - ios-port
       - fix/ios-rtl-newmoon-reader-port
+      - fix/v3-reader-translation-ios
     paths-ignore:
       - 'docs/**'
       - '**.md'
@@ -28,6 +28,7 @@ permissions:
 env:
   CI: 'true'
   EXPO_NO_TELEMETRY: '1'
+  GOOGLE_IOS_CLIENT_ID: ${{ vars.GOOGLE_IOS_CLIENT_ID }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -59,6 +60,9 @@ jobs:
       - name: Lint
         run: pnpm run lint
 
+      - name: Check reader formatter
+        run: pnpm run check:reader-formatter
+
       - name: Type-check
         run: pnpm run type-check
 
@@ -82,7 +86,7 @@ jobs:
   build-ipa:
     name: Unsigned Device IPA (arm64 · Release)
     needs: quality
-    runs-on: macos-26
+    runs-on: macos-15-intel
     timeout-minutes: 150
 
     env:
@@ -95,7 +99,7 @@ jobs:
 
       # The Expo 57 dependency tree ships SPM packages that declare
       # swift-tools-version 6.2 (e.g. package 'apple' inside React Native).
-      # macos-26 images default to Xcode 16.4 (Swift tools 6.1) -> the inner
+      # macos-15 images default to Xcode 16.4 (Swift tools 6.1) -> the inner
       # ExpoModulesJSI xcframework script phase fails with:
       #   "package 'apple' is using Swift tools version 6.2.0 but the
       #    installed version is 6.1.0"
@@ -267,3 +271,8 @@ jobs:
             ios/pod-install.log
             xcodebuild-device.log
           retention-days: 30
+
+  simulator-verification:
+    name: Verify the same commit on iOS Simulator
+    needs: build-ipa
+    uses: ./.github/workflows/ios-simulator-test.yml

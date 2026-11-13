@@ -8,14 +8,9 @@ import {
 import { TranslationMemory } from './memory';
 import { translateSegments } from './textService';
 import { providerById } from './prefs';
-import {
-  AI_COLLECT_CAPS,
-  AI_MAX_PART_CHARS,
-  AI_MAX_PART_SEGMENTS,
-  clampMaxRequests,
-  planAIParts,
-} from './aiPolicy';
+import { clampMaxRequests, planAIParts, limitsForProvider } from './aiPolicy';
 import { dailyLimitReached } from './usage';
+import { AIChapterBudget } from './chapterBudget';
 
 // Port of Zeus Ascent Edition: ZEUSNext/ReaderTranslation.swift — the batch
 // loop, visible-priority tiers, session caps and guards, restructured as a
@@ -27,6 +22,7 @@ export interface CollectedSegment {
   text: string;
   tier: number; // 0 = intersecting viewport, 1 = near, 2 = far (Zeus tiers)
   distance: number;
+  scope?: CoordinatorScope;
   chapter: number; // wor section number (data-ch)
 }
 
@@ -36,7 +32,12 @@ export interface CoordinatorApplyItem {
   chapter: number;
 }
 
-export type CoordinatorStatus = 'idle' | 'running' | 'paused' | 'completed' | 'error';
+export type CoordinatorStatus =
+  | 'idle'
+  | 'running'
+  | 'paused'
+  | 'completed'
+  | 'error';
 
 export interface CoordinatorProgress {
   status: CoordinatorStatus;
@@ -60,6 +61,7 @@ export interface CoordinatorDeps {
   getSecret: (key: string) => Promise<string>;
   onApply: (items: CoordinatorApplyItem[]) => void;
   onProgress: (progress: CoordinatorProgress) => void;
+  budget?: AIChapterBudget;
   yieldSlice?: () => Promise<void>; // injection point for InteractionManager
 }
 
@@ -74,6 +76,7 @@ export class ReaderTranslationCoordinator {
   private queue: CollectedSegment[] = [];
   private known = new Set<string>();
   private epoch = 0;
+  private session = 0;
   private processedCharacters = 0;
   private completed = 0;
   private reused = 0;
@@ -84,15 +87,18 @@ export class ReaderTranslationCoordinator {
   private pending = false;
   private lastScope: CoordinatorScope = { novelId: '', chapterId: '' };
   private requestsCount = 0;
-  // Set when the user resumes past the "chapter needs more requests than
-  // the ceiling" pause — explicit consent for the extra paid requests.
-  private ceilingApproved = false;
+  // Approval covers the exact planned total, not every future retry.
+  private approval: { key: string; total: number } | null = null;
+  private readonly budget: AIChapterBudget;
+  private abortController = new AbortController();
 
   constructor(
     private readonly prefs: TranslationPreferences,
     private readonly providers: AIProviderConfiguration[],
     private readonly deps: CoordinatorDeps,
-  ) {}
+  ) {
+    this.budget = deps.budget ?? new AIChapterBudget();
+  }
 
   get status(): CoordinatorStatus {
     return this.statusValue;
@@ -142,20 +148,14 @@ export class ReaderTranslationCoordinator {
             .map(entry => `${entry.term} => ${entry.replacement}`)
             .join('; ')}`
         : '';
-    const instruction = [provider.instruction, this.prefs.customInstruction, glossaryText]
+    const instruction = [
+      provider.instruction,
+      this.prefs.customInstruction,
+      glossaryText,
+    ]
       .filter(value => value && value.length > 0)
       .join('\n');
     return { ...provider, instruction };
-  }
-
-  private namespace(chapterId: string): string[] {
-    // Zeus reader namespace was "reader:" + title/sourceURL; Moon novels keys
-    // memory by stable novel/chapter identity instead.
-    return memoryIdentity(
-      `reader:${this.lastScope.novelId}:${chapterId}`,
-      this.prefs,
-      this.effectiveProvider(),
-    );
   }
 
   // New collect result arriving from the WebView shell.
@@ -170,7 +170,7 @@ export class ReaderTranslationCoordinator {
       if (this.known.has(segment.id)) continue;
       if (segment.text.trim().length === 0) continue;
       this.known.add(segment.id);
-      fresh.push(segment);
+      fresh.push({ ...segment, scope });
     }
     if (fresh.length === 0) return;
     this.queue.push(...fresh);
@@ -190,12 +190,14 @@ export class ReaderTranslationCoordinator {
     }
     this.pumping = true;
     const ticket = this.epoch;
+    const session = this.session;
     // The batch currently taken out of the queue. If the round aborts or
     // fails, it must go BACK to the queue — Zeus could always re-collect from
     // the live page; this coordinator owns the queue instead.
     let inflight: CollectedSegment[] = [];
     const appliedIds = new Set<string>();
     const requeue = (): void => {
+      if (session !== this.session) return;
       const lost = inflight.filter(segment => !appliedIds.has(segment.id));
       if (lost.length > 0) this.queue = lost.concat(this.queue);
       inflight = [];
@@ -205,37 +207,45 @@ export class ReaderTranslationCoordinator {
         if (ticket !== this.epoch) return;
         if (this.processedCharacters >= SESSION_CHAR_GUARD) {
           this.queue = [];
-          this.fail('حجم الترجمة في هذه الجلسة تجاوز الحد الآمن. اضغط متابعة لاستكمال بقية الفصل.');
+          this.fail(
+            'حجم الترجمة في هذه الجلسة تجاوز الحد الآمن. اضغط متابعة لاستكمال بقية الفصل.',
+          );
           return;
         }
-        this.queue.sort((a, b) => {
-          if (a.tier !== b.tier) return a.tier - b.tier;
-          if (a.distance !== b.distance) return a.distance - b.distance;
-          return a.id < b.id ? -1 : 1;
-        });
+        if (this.prefs.engine !== 'ai') {
+          this.queue.sort((a, b) => {
+            if (a.tier !== b.tier) return a.tier - b.tier;
+            if (a.distance !== b.distance) return a.distance - b.distance;
+            return a.id < b.id ? -1 : 1;
+          });
+        }
         const visible = this.queue[0].tier === 0;
-        // v3 AI policy: background rounds take the WHOLE chapter (the shell
-        // raises its collect caps accordingly); the plan below decides the
-        // real request split. Visible rounds keep the Zeus quick caps so the
-        // first screen still lands fast. Cloudflare/Google never see this.
+        // AI always plans a full chapter. Viewport tiers only apply to
+        // metered translation engines, where multiple small rounds are cheap.
         const aiWholeChapter = this.prefs.engine === 'ai';
-        const charLimit = visible
+        const charLimit = aiWholeChapter
+          ? Infinity
+          : visible
           ? VISIBLE_CHAR_LIMIT
-          : aiWholeChapter
-            ? AI_COLLECT_CAPS.maxCharacters
-            : BACKGROUND_CHAR_LIMIT;
-        const itemLimit = visible
+          : BACKGROUND_CHAR_LIMIT;
+        const itemLimit = aiWholeChapter
+          ? Infinity
+          : visible
           ? VISIBLE_ITEM_LIMIT
-          : aiWholeChapter
-            ? AI_COLLECT_CAPS.maxSegments
-            : BACKGROUND_ITEM_LIMIT;
+          : BACKGROUND_ITEM_LIMIT;
         const batch: CollectedSegment[] = [];
         let size = 0;
         let cutIndex = 0;
         while (cutIndex < this.queue.length && batch.length < itemLimit) {
           const segment = this.queue[cutIndex];
-          if (visible && segment.tier !== 0) break; // never mix tiers in a visible round
-          if (batch.length > 0 && size + Array.from(segment.text).length > charLimit) break;
+          if (segment.chapter !== this.queue[0].chapter) break;
+          if (!aiWholeChapter && visible && segment.tier !== 0) break; // never mix tiers in a visible round
+          if (
+            batch.length > 0 &&
+            size + Array.from(segment.text).length > charLimit
+          ) {
+            break;
+          }
           batch.push(segment);
           size += Array.from(segment.text).length;
           cutIndex += 1;
@@ -245,7 +255,13 @@ export class ReaderTranslationCoordinator {
         inflight = batch;
 
         const chapter = batch[0].chapter;
-        const ns = this.namespace(`${chapterIdOf(chapter, this.lastScope.chapterId)}`);
+        const scope = batch[0].scope ?? this.lastScope;
+        const ns = memoryIdentity(
+          `reader:${scope.novelId}:${chapterIdOf(chapter, scope.chapterId)}`,
+          this.prefs,
+          this.effectiveProvider(),
+        );
+        const budgetKey = JSON.stringify(ns);
         const cached = await this.deps.memory.lookup(
           ns,
           batch.map(row => row.text),
@@ -259,7 +275,8 @@ export class ReaderTranslationCoordinator {
           .filter(row => !cached.has(row.text))
           // Repeated lines are billed once per batch (Zeus dedupe rule).
           .filter(
-            (row, index, all) => all.findIndex(other => other.text === row.text) === index,
+            (row, index, all) =>
+              all.findIndex(other => other.text === row.text) === index,
           );
         const freshResults = new Map<string, string>();
         const applyItems = (items: CoordinatorApplyItem[]): void => {
@@ -269,11 +286,16 @@ export class ReaderTranslationCoordinator {
           this.completed += items.length;
           this.emit();
         };
-        const buildItems = (rows: CollectedSegment[], results: Map<string, string>) =>
+        const buildItems = (
+          rows: CollectedSegment[],
+          results: Map<string, string>,
+        ) =>
           rows.flatMap(row => {
             if (appliedIds.has(row.id)) return []; // already applied (streaming/part)
             const text = results.get(row.text);
-            return text === undefined ? [] : [{ id: row.id, text, chapter: row.chapter }];
+            return text === undefined
+              ? []
+              : [{ id: row.id, text, chapter: row.chapter }];
           });
         if (missing.length > 0) {
           this.processedCharacters += batch.reduce(
@@ -281,26 +303,46 @@ export class ReaderTranslationCoordinator {
             0,
           );
           const context = {
+            signal: this.abortController.signal,
             prefs: this.prefs,
             provider: this.effectiveProvider(),
-            secret: await this.deps.getSecret(secretKeyFor(this.prefs, this.provider())),
+            secret: await this.deps.getSecret(
+              secretKeyFor(this.prefs, this.provider()),
+            ),
           };
           if (aiWholeChapter) {
             // ---- v3 AI policy: whole chapter, few large parts ------------
+            const limits = limitsForProvider(context.provider);
             const plan = planAIParts(missing, {
-              maxRequestsPerChapter: clampMaxRequests(this.prefs.aiMaxRequestsPerChapter),
+              ...limits,
+              maxRequestsPerChapter: clampMaxRequests(
+                this.prefs.aiMaxRequestsPerChapter,
+              ),
             });
-            if (plan.exceedsCeiling && !this.ceilingApproved) {
+            const required = this.budget.spent(budgetKey) + plan.requests;
+            if (
+              required >
+              this.budget.allowance(
+                budgetKey,
+                this.prefs.aiMaxRequestsPerChapter,
+              )
+            ) {
+              this.approval = { key: budgetKey, total: required };
               // Do NOT spend without consent: keep the batch, pause, ask.
               requeue();
               this.statusValue = 'paused';
-              this.errorValue =
-                plan.reason ?? 'يحتاج هذا الفصل طلبات أكثر من الحد المسموح.';
+              this.errorValue = `سيصل مجموع محاولات هذا الفصل إلى ${required} طلبات (أُرسل ${this.budget.spent(
+                budgetKey,
+              )}). اضغط متابعة للموافقة على ${
+                plan.requests
+              } طلبات إضافية، أو اختر نموذجًا أكبر.`;
               this.emit();
               return;
             }
             const streamEnabled =
-              this.prefs.aiStreaming === true && context.provider?.kind === 'openAICompatible';
+              this.prefs.aiStreaming === true &&
+              (context.provider?.kind === 'openAICompatible' ||
+                context.provider?.kind === 'geminiAPI');
             for (const [from, to] of plan.parts) {
               if (ticket !== this.epoch) {
                 requeue();
@@ -314,17 +356,38 @@ export class ReaderTranslationCoordinator {
                 return;
               }
               const part = missing.slice(from, to);
-              const partResults = new Map<string, string>();
               // Count the request when it STARTS — failed attempts were
               // spent against the provider just like successful ones.
-              this.requestsCount += 1;
+              if (
+                this.budget.spent(budgetKey) >=
+                this.budget.allowance(
+                  budgetKey,
+                  this.prefs.aiMaxRequestsPerChapter,
+                )
+              ) {
+                this.approval = {
+                  key: budgetKey,
+                  total: this.budget.spent(budgetKey) + plan.parts.length,
+                };
+                requeue();
+                this.statusValue = 'paused';
+                this.errorValue =
+                  'وصل هذا الفصل إلى حد الطلبات. اضغط متابعة للموافقة على طلبات إضافية.';
+                this.emit();
+                return;
+              }
               const translated = await this.deps.translate(
                 part.map(row => ({ id: row.id, text: row.text })),
                 {
                   ...context,
+                  onRequest: () => {
+                    this.budget.reserve(budgetKey);
+                    this.requestsCount = this.budget.spent(budgetKey);
+                    this.emit();
+                  },
                   limits: {
-                    characterLimit: AI_MAX_PART_CHARS,
-                    itemLimit: AI_MAX_PART_SEGMENTS,
+                    characterLimit: limits.maxCharsPerPart,
+                    itemLimit: limits.maxSegmentsPerPart,
                   },
                   stream: streamEnabled,
                   onPartial: streamEnabled
@@ -334,10 +397,13 @@ export class ReaderTranslationCoordinator {
                         if (ticket !== this.epoch) return;
                         const source = part.find(row => row.id === item.id);
                         if (!source || appliedIds.has(source.id)) return;
-                        partResults.set(source.text, item.text);
-                        applyItems(
-                          buildItems([source], partResults),
-                        );
+                        this.deps.onApply([
+                          {
+                            id: source.id,
+                            text: item.text,
+                            chapter: source.chapter,
+                          },
+                        ]);
                       }
                     : undefined,
                 },
@@ -357,15 +423,16 @@ export class ReaderTranslationCoordinator {
                   if (source) partSave.set(source.text, item.text);
                 }
                 await this.deps.memory.save(ns, partSave, {
-                  novelId: this.lastScope.novelId,
-                  chapterId: this.lastScope.chapterId,
+                  novelId: scope.novelId,
+                  chapterId: scope.chapterId,
                   engine: this.prefs.engine,
                   target: this.prefs.target,
                 });
               }
               // Apply THIS part before paying for the next one.
               applyItems(buildItems(part, freshResults));
-              await (this.deps.yieldSlice?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+              await (this.deps.yieldSlice?.() ??
+                new Promise<void>(resolve => setTimeout(resolve, 0)));
             }
           } else {
             const translated = await this.deps.translate(
@@ -382,8 +449,8 @@ export class ReaderTranslationCoordinator {
             }
             if (keepsTranslations(this.prefs)) {
               await this.deps.memory.save(ns, freshResults, {
-                novelId: this.lastScope.novelId,
-                chapterId: this.lastScope.chapterId,
+                novelId: scope.novelId,
+                chapterId: scope.chapterId,
                 engine: this.prefs.engine,
                 target: this.prefs.target,
               });
@@ -399,9 +466,14 @@ export class ReaderTranslationCoordinator {
         inflight = [];
         this.emit();
         // Let the UI breathe between batches (Zeus Task.yield equivalent).
-        await (this.deps.yieldSlice?.() ?? new Promise<void>(resolve => setTimeout(resolve, 0)));
+        await (this.deps.yieldSlice?.() ??
+          new Promise<void>(resolve => setTimeout(resolve, 0)));
       }
-      if (this.statusValue === 'running' && this.queue.length === 0 && !this.pending) {
+      if (
+        this.statusValue === 'running' &&
+        this.queue.length === 0 &&
+        !this.pending
+      ) {
         this.statusValue = 'completed';
         this.emit();
       }
@@ -415,7 +487,9 @@ export class ReaderTranslationCoordinator {
       const message =
         error instanceof TranslationFailure
           ? error.message
-          : `تعذر إكمال الترجمة. تحقق من الشبكة أو المزود. (${(error as Error)?.message ?? 'خطأ غير معروف'})`;
+          : `تعذر إكمال الترجمة. تحقق من الشبكة أو المزود. (${
+              (error as Error)?.message ?? 'خطأ غير معروف'
+            })`;
       this.statusValue = 'paused';
       this.errorValue = message;
       this.emit();
@@ -434,6 +508,8 @@ export class ReaderTranslationCoordinator {
     // Zeus pause: invalidates the in-flight ticket, keeps queued work for
     // resume, surfaces a resumable state.
     this.epoch += 1;
+    this.abortController.abort();
+    this.abortController = new AbortController();
     if (this.statusValue === 'running') {
       this.statusValue = 'paused';
       this.errorValue = 'أُوقفت الترجمة. يمكنك المتابعة أو عرض الأصل.';
@@ -445,7 +521,10 @@ export class ReaderTranslationCoordinator {
     if (this.statusValue !== 'paused') return;
     // Resuming past the "needs more requests" pause = explicit approval to
     // spend the additional requests for this run.
-    this.ceilingApproved = true;
+    if (this.approval) {
+      this.budget.approve(this.approval.key, this.approval.total);
+      this.approval = null;
+    }
     this.errorValue = null;
     this.statusValue = 'running';
     this.emit();
@@ -453,7 +532,10 @@ export class ReaderTranslationCoordinator {
   }
 
   restore(): void {
+    this.session += 1;
     this.epoch += 1;
+    this.abortController.abort();
+    this.abortController = new AbortController();
     this.queue = [];
     this.known = new Set();
     this.total = 0;
@@ -461,7 +543,7 @@ export class ReaderTranslationCoordinator {
     this.reused = 0;
     this.processedCharacters = 0;
     this.requestsCount = 0;
-    this.ceilingApproved = false;
+    this.approval = null;
     this.statusValue = 'idle';
     this.errorValue = null;
     this.emit();

@@ -1,3 +1,4 @@
+import { sharedChapterBudget } from '@services/translation/chapterBudget';
 // src/screens/reader/newmoon/translationController.ts
 //
 // RN-side controller for the reader translation feature (Zeus Ascent port).
@@ -38,7 +39,6 @@ import {
   providerById,
   readSecret,
   savePreferences,
-  secretKey,
   translateSegments,
   AI_COLLECT_CAPS,
   type AIProviderConfiguration,
@@ -61,7 +61,11 @@ type TrCommand =
       rtl: boolean;
       caps?: { maxCharacters: number; maxSegments: number };
     }
-  | { kind: 'trStart'; target: string; caps?: { maxCharacters: number; maxSegments: number } }
+  | {
+      kind: 'trStart';
+      target: string;
+      caps?: { maxCharacters: number; maxSegments: number };
+    }
   | { kind: 'trCollect' }
   | { kind: 'trApply'; items: CoordinatorApplyItem[]; expected: number }
   | { kind: 'trRestore' }
@@ -89,7 +93,7 @@ export interface PrefetchChapterContext {
   chapterId: string | number;
   /** Reader-order position the chapter occupies in the document. */
   wNum: number;
-  /** Plain wor text blocks (paragraph-level, `\n\n`-split). */
+  /** Plain wor text blocks (paragraph-level, `\n`-split). */
   lines: string[];
 }
 
@@ -118,6 +122,10 @@ export class TranslationController {
   private navigate: TrNavigate | null = null;
   private onCompleted: (() => void) | null = null;
   private disposed = false;
+  private readonly budget = sharedChapterBudget;
+  private prefetchCoordinator: ReaderTranslationCoordinator | null = null;
+  private startPending = false;
+  private startToken = 0;
 
   /** Primary document scope (novel + the chapter that owns the document). */
   private scope: { novelId: string; chapterId: string } = {
@@ -169,6 +177,9 @@ export class TranslationController {
   /** Unmount — drop callbacks so in-flight work becomes a no-op. */
   dispose(): void {
     this.disposed = true;
+    this.startToken++;
+    this.coordinator.restore();
+    this.prefetchCoordinator?.restore();
     this.postMessage = null;
     this.navigate = null;
     this.onCompleted = null;
@@ -238,6 +249,14 @@ export class TranslationController {
     chapterId: string | number,
     wNum: number,
   ): void {
+    if (
+      this.scope.chapterId !== String(chapterId) ||
+      this.scope.novelId !== String(novelId)
+    ) {
+      this.coordinator.restore();
+    }
+    this.startToken++;
+    this.startPending = false;
     this.scope = { novelId: String(novelId), chapterId: String(chapterId) };
     this.rememberSection(wNum, String(chapterId));
     this.prefetchDone.clear(); // new position → new neighbor window
@@ -277,7 +296,7 @@ export class TranslationController {
 
   /** Begin a translation run for the current scope (shell starts collecting). */
   start(): void {
-    if (this.coordinator.status === 'running') {
+    if (this.coordinator.status === 'running' || this.startPending) {
       return;
     }
     // A non-idle session (completed/error/paused — e.g. after a document
@@ -295,16 +314,30 @@ export class TranslationController {
       novelId: this.scope.novelId,
       chapterId: this.scope.chapterId,
     });
-    this.post({
-      kind: 'trStart',
-      target: this.prefs.target,
-      caps: isAIEngine(this.prefs)
-        ? {
-            maxCharacters: AI_COLLECT_CAPS.maxCharacters,
-            maxSegments: AI_COLLECT_CAPS.maxSegments,
-          }
-        : undefined,
-    });
+    const scope = this.scope;
+    const token = ++this.startToken;
+    const postStart = () => {
+      if (token !== this.startToken) return;
+      this.startPending = false;
+      if (!this.disposed && scope === this.scope) {
+        this.post({
+          kind: 'trStart',
+          target: this.prefs.target,
+          caps: isAIEngine(this.prefs)
+            ? {
+                maxCharacters: AI_COLLECT_CAPS.maxCharacters,
+                maxSegments: AI_COLLECT_CAPS.maxSegments,
+              }
+            : undefined,
+        });
+      }
+    };
+    if (this.prefetchCoordinator?.status === 'running') {
+      this.startPending = true;
+      void this.prefetchChain.then(postStart);
+    } else {
+      postStart();
+    }
   }
 
   /** Queue one chapter for background pre-translation. Serialized internally
@@ -315,8 +348,10 @@ export class TranslationController {
       return;
     }
     if (
-      Math.min(PREFETCH_MAX_CHAPTERS, Math.max(0, this.prefs.prefetchNextChapters)) <=
-      0
+      Math.min(
+        PREFETCH_MAX_CHAPTERS,
+        Math.max(0, this.prefs.prefetchNextChapters),
+      ) <= 0
     ) {
       return;
     }
@@ -346,6 +381,7 @@ export class TranslationController {
   private buildCoordinator(): ReaderTranslationCoordinator {
     return new ReaderTranslationCoordinator(this.prefs, this.providers, {
       memory: this.memory,
+      budget: this.budget,
       translate: translateSegments,
       getSecret: key => readSecret(key),
       onApply: items => this.handleApply(items),
@@ -388,6 +424,9 @@ export class TranslationController {
       this.prefs.customInstruction,
       keepsTranslations(this.prefs) ? 'keep' : 'drop',
       JSON.stringify(this.prefs.glossary),
+      String(this.prefs.aiMaxRequestsPerChapter),
+      String(this.prefs.aiDailyRequestLimit),
+      String(this.prefs.aiStreaming),
     ].join('|');
   }
 
@@ -630,9 +669,9 @@ export class TranslationController {
 
     const lines = [
       ...new Set(
-        ctx.lines
-          .map(line => line.trim())
-          .filter(line => line.length > 0 && !isImageOnlyBlock(line)),
+        ctx.lines.filter(
+          line => line.trim().length > 0 && !isImageOnlyBlock(line),
+        ),
       ),
     ];
     if (lines.length === 0) {
@@ -656,31 +695,48 @@ export class TranslationController {
       return;
     }
 
-    const provider = this.effectiveProvider();
-    const secret = await readSecret(secretKey(this.prefs, provider));
-    const translated = await translateSegments(
-      missing.map((text, index) => ({ id: `pf${ctx.wNum}:${index}`, text })),
-      { prefs: this.prefs, provider, secret },
-    );
-    const sourceById = new Map<string, string>();
-    missing.forEach((text, index) => {
-      sourceById.set(`pf${ctx.wNum}:${index}`, text);
-    });
-    const results = new Map<string, string>();
-    for (const item of translated) {
-      const source = sourceById.get(item.id);
-      if (source !== undefined) {
-        results.set(source, item.text);
-      }
-    }
-    if (results.size === 0) {
+    if (
+      this.disposed ||
+      this.coordinator.status === 'running' ||
+      this.startPending
+    ) {
       return;
     }
-    await this.memory.save(namespace, results, {
-      novelId: String(ctx.novelId),
-      chapterId: String(ctx.chapterId),
-      engine: this.prefs.engine,
-      target: this.prefs.target,
+    let finish: () => void = () => {};
+    const settled = new Promise<void>(resolve => {
+      finish = resolve;
     });
+    const coordinator = new ReaderTranslationCoordinator(
+      this.prefs,
+      this.providers,
+      {
+        memory: this.memory,
+        budget: this.budget,
+        translate: translateSegments,
+        getSecret: readSecret,
+        onApply: () => {},
+        onProgress: progress => {
+          if (
+            this.disposed ||
+            (progress.status !== 'running' && progress.status !== 'idle')
+          ) {
+            finish();
+          }
+        },
+      },
+    );
+    this.prefetchCoordinator = coordinator;
+    coordinator.addSegments(
+      missing.map((text, index) => ({
+        id: `pf${ctx.wNum}:${index}`,
+        text,
+        chapter: ctx.wNum,
+        tier: 2,
+        distance: 0,
+      })),
+      { novelId: String(ctx.novelId), chapterId: String(ctx.chapterId) },
+    );
+    await settled;
+    this.prefetchCoordinator = null;
   }
 }

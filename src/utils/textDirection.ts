@@ -11,18 +11,21 @@
 // direction when they meaningfully outnumber Latin ones. Neutrals
 // (punctuation, digits) are ignored.
 
-const ARABIC_RE = /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/g;
+const ARABIC_RE =
+  /[\u0600-\u06FF\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/g;
 const LATIN_RE = /[A-Za-z\u00C0-\u024F]/g;
 
 const countMatches = (text: string, re: RegExp): number =>
   (text.match(re) || []).length;
 
 /** 'rtl' when the text is Arabic-dominant, otherwise 'ltr'. */
-export const detectTextDirection = (text: string | null | undefined): 'rtl' | 'ltr' => {
+export const detectTextDirection = (
+  text: string | null | undefined,
+): 'rtl' | 'ltr' => {
   if (!text) {
     return 'ltr';
   }
-  const arabic = countMatches(text, ARABIC_RE);
+  const arabic = countMatches(text.replace(/[^\p{L}]/gu, ''), ARABIC_RE);
   const latin = countMatches(text, LATIN_RE);
   if (arabic === 0 && latin === 0) {
     return 'ltr';
@@ -36,9 +39,16 @@ export const detectTextDirection = (text: string | null | undefined): 'rtl' | 'l
  */
 export const directionStyleFor = (
   text: string | null | undefined,
-): { writingDirection: 'rtl' | 'ltr'; textAlign: 'right' | 'left' } => {
+): {
+  direction: 'ltr';
+  writingDirection: 'rtl' | 'ltr';
+  textAlign: 'right' | 'left';
+} => {
   const dir = detectTextDirection(text);
   return {
+    // Fabric iOS flips explicit left/right alignment inside an RTL layout.
+    // Keep this text node's layout physical; writingDirection handles bidi.
+    direction: 'ltr',
     writingDirection: dir,
     textAlign: dir === 'rtl' ? 'right' : 'left',
   };

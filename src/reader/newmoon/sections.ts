@@ -24,18 +24,6 @@ export const escapeHtmlText = (text: any): string =>
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
 
-// Quote-mark pairs used by the coloring features (brackets / markdown inner marks)
-const STYLE_MARKS: Record<string, string[] | null> = {
-  guillemets: ['«', '»'],
-  curly: ['“', '”'],
-  straight: ['"', '"'],
-  single: ['‘', '’'],
-  all: null,
-};
-
-const escapeRegex = (s: any): string =>
-  String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
 // A content line that is already an <img> tag (emitted by htmlToWorText.ts).
 // Anchored + case-insensitive; sanitize-html guarantees well-formed img tags.
 const IMAGE_LINE_RE = /^\s*<img\s/i;
@@ -45,94 +33,118 @@ export const isImageLine = (line: string): boolean => IMAGE_LINE_RE.test(line);
 // Process a single content line: brackets / markdown / dialogue / custom marks.
 // SINGLE-PASS: one combined regex runs over the ESCAPED text and every match is
 // wrapped exactly once (see the app reader for the full rationale).
-export const processLineHTML = (line: string, S: any): string => {
-  const text = escapeHtmlText(line);
+// Self-contained factory is compiled into formatterSource.ts for the WebView.
+// Both render paths escape and format provider output identically.
+export const createLineFormatter = () => {
+  const escapeHtmlText = (text: unknown): string =>
+    String(text ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
+  // Quote-mark pairs used by the coloring features (brackets / markdown inner marks)
+  const STYLE_MARKS: Record<string, string[] | null> = {
+    guillemets: ['«', '»'],
+    curly: ['“', '”'],
+    straight: ['"', '"'],
+    single: ['‘', '’'],
+    all: null,
+  };
 
-  // Dialogue pair pattern (quote marks chosen by the user)
-  let dialogueSrc: string;
-  if (S.selectedQuoteStyle === 'guillemets') dialogueSrc = '«[^»]*»';
-  else if (S.selectedQuoteStyle === 'curly') dialogueSrc = '“[^”]*”';
-  else if (S.selectedQuoteStyle === 'straight') dialogueSrc = '"[^"]*"';
-  else if (S.selectedQuoteStyle === 'single') dialogueSrc = "['‘][^'’]*['’]";
-  else dialogueSrc = '[“"«][^”"»]*[”"»]';
+  const escapeRegex = (s: any): string =>
+    String(s || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-  const alternatives = [
-    '\\[[^\\]\\n]*\\]', // brackets [...]
-    '\\*\\*[\\s\\S]*?\\*\\*', // markdown bold **...**
-    dialogueSrc, // dialogue quote pair
-  ];
+  const formatLine = (line: string, S: any): string => {
+    const text = escapeHtmlText(line);
 
-  // Custom marks are escaped for HTML first (so marks like "<<" work) then for regex
-  let customOpen = '',
-    customClose = '';
-  if (
-    S.customOpenMark &&
-    S.customOpenMark.trim() &&
-    S.customCloseMark &&
-    S.customCloseMark.trim()
-  ) {
-    customOpen = escapeHtmlText(S.customOpenMark.trim());
-    customClose = escapeHtmlText(S.customCloseMark.trim());
-    alternatives.push(
-      escapeRegex(customOpen) + '[\\s\\S]*?' + escapeRegex(customClose),
-    );
-  }
+    // Dialogue pair pattern (quote marks chosen by the user)
+    let dialogueSrc: string;
+    if (S.selectedQuoteStyle === 'guillemets') dialogueSrc = '«[^»]*»';
+    else if (S.selectedQuoteStyle === 'curly') dialogueSrc = '“[^”]*”';
+    else if (S.selectedQuoteStyle === 'straight') dialogueSrc = '"[^"]*"';
+    else if (S.selectedQuoteStyle === 'single') dialogueSrc = "['‘][^'’]*['’]";
+    else dialogueSrc = '[“"«][^”"»]*[”"»]';
 
-  // Colored replacement terms ("تلوين البديل") join the SAME single pass
-  const colored = Array.isArray(S.colored) ? S.colored : [];
-  colored.forEach((c: any) => alternatives.push(c.src));
+    const alternatives = [
+      '\\[[^\\]\\n]*\\]', // brackets [...]
+      '\\*\\*[\\s\\S]*?\\*\\*', // markdown bold **...**
+      dialogueSrc, // dialogue quote pair
+    ];
 
-  let re: RegExp;
-  try {
-    re = new RegExp(alternatives.join('|'), 'g');
-  } catch {
-    return text;
-  }
+    // Custom marks are escaped for HTML first (so marks like "<<" work) then for regex
+    let customOpen = '',
+      customClose = '';
+    if (
+      S.customOpenMark &&
+      S.customOpenMark.trim() &&
+      S.customCloseMark &&
+      S.customCloseMark.trim()
+    ) {
+      customOpen = escapeHtmlText(S.customOpenMark.trim());
+      customClose = escapeHtmlText(S.customCloseMark.trim());
+      alternatives.push(
+        escapeRegex(customOpen) + '[\\s\\S]*?' + escapeRegex(customClose),
+      );
+    }
 
-  const bracketMarks = STYLE_MARKS[S.selectedBracketStyle] ?? null;
-  const markdownMarks = STYLE_MARKS[S.selectedMarkdownStyle] ?? null;
+    // Colored replacement terms ("تلوين البديل") join the SAME single pass
+    const colored = Array.isArray(S.colored) ? S.colored : [];
+    colored.forEach((c: any) => alternatives.push(c.src));
 
-  return text.replace(re, m => {
-    // colored replacement term (checked first so it always wins)
-    for (let ci = 0; ci < colored.length; ci++) {
-      if (m === colored[ci].escaped) {
-        return `<span class="wor-rep-colored" style="color:${colored[ci].color}">${m}</span>`;
+    let re: RegExp;
+    try {
+      re = new RegExp(alternatives.join('|'), 'g');
+    } catch {
+      return text;
+    }
+
+    const bracketMarks = STYLE_MARKS[S.selectedBracketStyle] ?? null;
+    const markdownMarks = STYLE_MARKS[S.selectedMarkdownStyle] ?? null;
+
+    return text.replace(re, m => {
+      // colored replacement term (checked first so it always wins)
+      for (let ci = 0; ci < colored.length; ci++) {
+        if (m === colored[ci].escaped) {
+          return `<span class="wor-rep-colored" style="color:${colored[ci].color}">${m}</span>`;
+        }
       }
-    }
-    // custom marks first (user-chosen delimiters take precedence)
-    if (customOpen && m.startsWith(customOpen) && m.endsWith(customClose)) {
-      const inner = m.slice(customOpen.length, m.length - customClose.length);
-      return `<span class="custom-formatted"><span class="cmark">${customOpen}</span>${inner}<span class="cmark">${customClose}</span></span>`;
-    }
-    // brackets [ ... ]
-    if (m.charAt(0) === '[' && m.charAt(m.length - 1) === ']') {
-      const inner = m.slice(1, -1);
-      const innerStart = bracketMarks
-        ? `<span class="bq-style">${escapeHtmlText(bracketMarks[0])}</span>`
-        : '';
-      const innerEnd = bracketMarks
-        ? `<span class="bq-style">${escapeHtmlText(bracketMarks[1])}</span>`
-        : '';
-      return `<span class="bracket-formatted"><span class="bmark">[</span>${innerStart}${inner}${innerEnd}<span class="bmark">]</span></span>`;
-    }
-    // markdown bold ** ... **
-    if (m.startsWith('**') && m.endsWith('**') && m.length > 4) {
-      const inner = m.slice(2, -2);
-      const qStart = markdownMarks
-        ? `<span class="mq-style">${escapeHtmlText(markdownMarks[0])}</span>`
-        : '';
-      const qEnd = markdownMarks
-        ? `<span class="mq-style">${escapeHtmlText(markdownMarks[1])}</span>`
-        : '';
-      return `<span class="cm-markdown-bold"><span class="mmark">**</span>${qStart}${inner}${qEnd}<span class="mmark">**</span></span>`;
-    }
-    // dialogue quote pair
-    const open = m.charAt(0);
-    const close = m.charAt(m.length - 1);
-    const inner = m.length > 2 ? m.slice(1, -1) : '';
-    return `<span class="cm-dialogue-text"><span class="qmark">${open}</span>${inner}<span class="qmark">${close}</span></span>`;
-  });
+      // custom marks first (user-chosen delimiters take precedence)
+      if (customOpen && m.startsWith(customOpen) && m.endsWith(customClose)) {
+        const inner = m.slice(customOpen.length, m.length - customClose.length);
+        return `<span class="custom-formatted"><span class="cmark">${customOpen}</span>${inner}<span class="cmark">${customClose}</span></span>`;
+      }
+      // brackets [ ... ]
+      if (m.charAt(0) === '[' && m.charAt(m.length - 1) === ']') {
+        const inner = m.slice(1, -1);
+        const innerStart = bracketMarks
+          ? `<span class="bq-style">${escapeHtmlText(bracketMarks[0])}</span>`
+          : '';
+        const innerEnd = bracketMarks
+          ? `<span class="bq-style">${escapeHtmlText(bracketMarks[1])}</span>`
+          : '';
+        return `<span class="bracket-formatted"><span class="bmark">[</span>${innerStart}${inner}${innerEnd}<span class="bmark">]</span></span>`;
+      }
+      // markdown bold ** ... **
+      if (m.startsWith('**') && m.endsWith('**') && m.length > 4) {
+        const inner = m.slice(2, -2);
+        const qStart = markdownMarks
+          ? `<span class="mq-style">${escapeHtmlText(markdownMarks[0])}</span>`
+          : '';
+        const qEnd = markdownMarks
+          ? `<span class="mq-style">${escapeHtmlText(markdownMarks[1])}</span>`
+          : '';
+        return `<span class="cm-markdown-bold"><span class="mmark">**</span>${qStart}${inner}${qEnd}<span class="mmark">**</span></span>`;
+      }
+      // dialogue quote pair
+      const open = m.charAt(0);
+      const close = m.charAt(m.length - 1);
+      const inner = m.length > 2 ? m.slice(1, -1) : '';
+      return `<span class="cm-dialogue-text"><span class="qmark">${open}</span>${inner}<span class="qmark">${close}</span></span>`;
+    });
+  };
+
+  return formatLine;
 };
+export const processLineHTML = createLineFormatter();
 
 // Build one chapter <section> in the Galaxy reading-page style.
 // The chapter object shape on this platform is
@@ -155,7 +167,10 @@ export const buildWorSectionHTML = (sec: any, idx: number, S: any): string => {
       // through unescaped; every other line takes the normal pipeline.
       isImageLine(line)
         ? `<p class="wor-image-p">${line.trim()}</p>`
-        : `<p>${processLineHTML(line, S)}</p>`,
+        : `<p data-wor-source="${escapeHtmlText(line).replace(
+            /"/g,
+            '&quot;',
+          )}">${processLineHTML(line, S)}</p>`,
     )
     .join('');
   const sepHTML =

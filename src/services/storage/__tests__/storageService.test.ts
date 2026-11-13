@@ -2,6 +2,14 @@
 // canonical chapter deletion (files + isDownloaded flags), refuse unknown
 // categories, and report REAL freed bytes.
 
+import NativeFile from '@modules/native-file';
+import {
+  deleteNovelChapters,
+  deleteStorageCategory,
+  getNovelStorageBreakdown,
+  getStorageOverview,
+} from '../storageService';
+
 jest.mock('expo-image', () => ({
   Image: { clearDiskCache: jest.fn().mockResolvedValue(true) },
 }));
@@ -15,6 +23,7 @@ jest.mock('@modules/native-file', () => ({
     getStorageInfo: jest.fn(),
     getDirectoryStats: jest.fn(),
     deleteDirectoryContents: jest.fn(),
+    clearWebViewCache: jest.fn().mockResolvedValue(undefined),
     readDir: jest.fn(),
     exists: jest.fn(),
     mkdir: jest.fn(),
@@ -46,15 +55,6 @@ jest.mock('@database/queries/NovelQueries', () => ({
   getAllNovels: () => mockGetAllNovels(),
 }));
 
-// eslint-disable-next-line import/first -- must stay after jest.mock factories
-import NativeFile from '@modules/native-file';
-import {
-  deleteNovelChapters,
-  deleteStorageCategory,
-  getNovelStorageBreakdown,
-  getStorageOverview,
-} from '../storageService';
-
 const mockedNativeFile = NativeFile as jest.Mocked<typeof NativeFile>;
 
 beforeEach(() => {
@@ -68,7 +68,13 @@ describe('getStorageOverview', () => {
       deviceFreeBytes: 10 * 1024 ** 3,
       containerBytes: 500 * 1024 * 1024,
       categories: {
-        downloads: { path: '/d', bytes: 100, files: 5, folders: 2, exists: true },
+        downloads: {
+          path: '/d',
+          bytes: 100,
+          files: 5,
+          folders: 2,
+          exists: true,
+        },
         caches: { path: '/c', bytes: 40, files: 4, folders: 1, exists: true },
         databases: { path: '/l', bytes: 8, files: 1, folders: 0, exists: true },
       },
@@ -88,23 +94,19 @@ describe('getStorageOverview', () => {
 });
 
 describe('deleteStorageCategory', () => {
-  it('deletes webview caches through the confined native call and reports real bytes', async () => {
-    (mockedNativeFile.exists as jest.Mock).mockResolvedValue(true);
-    (mockedNativeFile.deleteDirectoryContents as jest.Mock).mockResolvedValue({
-      deletedBytes: 4096,
-      errors: [],
-    });
-
+  it('clears only WebKit cache types and measures the actual delta', async () => {
+    jest.replaceProperty(require('react-native').Platform, 'OS', 'ios');
+    mockedNativeFile.getDirectoryStats
+      .mockResolvedValueOnce({ bytes: 8192 } as never)
+      .mockResolvedValueOnce({ bytes: 4096 } as never);
     const result = await deleteStorageCategory('webview');
-
-    expect(mockedNativeFile.deleteDirectoryContents).toHaveBeenCalledWith(
-      '/container/Library/WebKit',
-    );
+    expect(mockedNativeFile.clearWebViewCache).toHaveBeenCalledTimes(1);
+    expect(mockedNativeFile.deleteDirectoryContents).not.toHaveBeenCalled();
     expect(result.freedBytes).toBe(4096);
-    expect(result.errors).toEqual([]);
   });
 
   it('propagates native delete errors instead of faking success', async () => {
+    mockedNativeFile.exists.mockResolvedValue(true);
     (mockedNativeFile.deleteDirectoryContents as jest.Mock).mockResolvedValue({
       deletedBytes: 12,
       errors: ['locked-file: Operation not permitted'],
@@ -115,11 +117,23 @@ describe('deleteStorageCategory', () => {
     expect(result.freedBytes).toBe(12);
   });
 
+  it('deletes downloaded chapters across novels and measures freed bytes', async () => {
+    mockGetDownloadedChapters.mockResolvedValueOnce([
+      { id: 1, novelId: 7, pluginId: 'a' },
+      { id: 2, novelId: 7, pluginId: 'a' },
+      { id: 3, novelId: 8, pluginId: 'b' },
+    ]);
+    mockedNativeFile.getDirectoryStats
+      .mockResolvedValueOnce({ bytes: 100 } as never)
+      .mockResolvedValueOnce({ bytes: 0 } as never);
+    const result = await deleteStorageCategory('downloads');
+    expect(mockDeleteChapters).toHaveBeenCalledWith('a', 7, [1, 2]);
+    expect(mockDeleteChapters).toHaveBeenCalledWith('b', 8, [3]);
+    expect(result).toEqual({ freedBytes: 100, errors: [] });
+  });
+
   it('refuses to delete personal data categories', async () => {
     await expect(deleteStorageCategory('databases')).rejects.toThrow(
-      /dedicated flows/,
-    );
-    await expect(deleteStorageCategory('downloads')).rejects.toThrow(
       /dedicated flows/,
     );
     expect(mockedNativeFile.deleteDirectoryContents).not.toHaveBeenCalled();
@@ -135,12 +149,24 @@ describe('getNovelStorageBreakdown + deleteNovelChapters', () => {
       async (dir: string) => {
         if (dir === '/container/Documents/Novels') {
           return [
-            { name: 'p1', path: '/container/Documents/Novels/p1', isDirectory: true },
+            {
+              name: 'p1',
+              path: '/container/Documents/Novels/p1',
+              isDirectory: true,
+            },
           ];
         }
         return [
-          { name: '7', path: '/container/Documents/Novels/p1/7', isDirectory: true },
-          { name: '999', path: '/container/Documents/Novels/p1/999', isDirectory: true },
+          {
+            name: '7',
+            path: '/container/Documents/Novels/p1/7',
+            isDirectory: true,
+          },
+          {
+            name: '999',
+            path: '/container/Documents/Novels/p1/999',
+            isDirectory: true,
+          },
         ];
       },
     );

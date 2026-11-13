@@ -1,3 +1,5 @@
+import type { AIProviderConfiguration } from './providerTypes';
+import { TranslationFailure } from './types';
 // Moon novels v3 — AI batch policy (engine === 'ai' ONLY).
 //
 // Zeus Ascent translated chapter content through fixed-size rounds
@@ -88,6 +90,17 @@ export const planAIParts = (
 ): AIPlan => {
   const config: AIPlanLimits = { ...AI_PLAN_DEFAULTS, ...limits };
   const maxRequests = clampMaxRequests(config.maxRequestsPerChapter);
+  if (
+    segments.some(
+      segment =>
+        Array.from(segment.text).length > config.maxCharsPerPart ||
+        estimateTokens(segment.text) > config.outputTokenBudget,
+    )
+  ) {
+    throw new TranslationFailure(
+      'توجد فقرة تتجاوز سعة النموذج المتاحة. اختر نموذجًا أكبر قبل إرسال الفصل.',
+    );
+  }
 
   if (segments.length === 0) {
     return { parts: [], requests: 0, exceedsCeiling: false };
@@ -140,12 +153,17 @@ const cutParts = (
     const text = segments[index].text;
     const segmentTokens = estimateTokens(text);
     const segmentChars = Array.from(text).length;
-    const wouldOverflowTokens = tokens > 0 && tokens + segmentTokens > perPartTokens;
+    const wouldOverflowTokens =
+      tokens > 0 && tokens + segmentTokens > perPartTokens;
     const wouldOverflowHard =
+      tokens + segmentTokens > config.outputTokenBudget ||
       chars + segmentChars > config.maxCharsPerPart ||
       index - start + 1 > config.maxSegmentsPerPart;
 
-    if ((wouldOverflowTokens && parts.length + 1 < targetParts) || wouldOverflowHard) {
+    if (
+      (wouldOverflowTokens && parts.length + 1 < targetParts) ||
+      wouldOverflowHard
+    ) {
       // Close current part BEFORE this segment (never splits a segment).
       parts.push([start, index]);
       start = index;
@@ -164,3 +182,25 @@ const cutParts = (
 // multi-part policy — transparency about real request counts (spec item).
 export const describeAIPlan = (requests: number, segments: number): string =>
   `${requests} طلب${requests === 1 ? '' : 'ات'} للنموذج · ${segments} فقرة`;
+
+// Discovery limits are advisory and leave room for the JSON envelope. Unknown
+// models retain conservative defaults rather than inventing a larger window.
+export const limitsForProvider = (
+  provider: AIProviderConfiguration | null,
+): AIPlanLimits => {
+  const model = provider?.models.find(row => row.id === provider.model);
+  const output = model?.outputTokenLimit;
+  const input = model?.inputTokenLimit;
+  return {
+    ...AI_PLAN_DEFAULTS,
+    outputTokenBudget:
+      output && output > 0
+        ? Math.max(1, Math.floor(output * 0.75))
+        : AI_OUTPUT_TOKEN_BUDGET,
+    maxCharsPerPart:
+      input && input > 0
+        ? Math.max(1, Math.min(120_000, Math.floor((input - 2048) * 2)))
+        : AI_MAX_PART_CHARS,
+    maxSegmentsPerPart: 4096,
+  };
+};

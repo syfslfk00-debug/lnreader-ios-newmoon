@@ -254,24 +254,20 @@ describe('NewMoonReaderScreen — drawer navigation wiring', () => {
     require('@database/queries/HistoryQueries').insertHistory.mockResolvedValue(
       undefined,
     );
-    require(
-      '@database/queries/NovelQueries',
-    ).switchNovelToLibraryQuery.mockResolvedValue(undefined);
+    require('@database/queries/NovelQueries').switchNovelToLibraryQuery.mockResolvedValue(
+      undefined,
+    );
     const pluginFetch = require('@services/plugin/fetch');
     pluginFetch.fetchChapter.mockResolvedValue('<p>فصل</p>');
     pluginFetch.fetchPage.mockResolvedValue(null);
-    require(
-      '@screens/reader/utils/sanitizeChapterText',
-    ).sanitizeChapterText.mockImplementation(
+    require('@screens/reader/utils/sanitizeChapterText').sanitizeChapterText.mockImplementation(
       (_p: unknown, _n: unknown, _c: unknown, html: unknown) => String(html),
     );
   });
 
   it('routes every drawer nav target to a real app screen (no dead buttons)', async () => {
     render(
-      <NewMoonReaderScreen
-        route={{ params: { novel, chapter } } as never}
-      />,
+      <NewMoonReaderScreen route={{ params: { novel, chapter } } as never} />,
     );
     sendShell({ t: 'ready' });
     await waitFor(() => expect(injectedChapters()).toBe(1));
@@ -332,26 +328,22 @@ describe('NewMoonReaderScreen — 50-tap document stability (P0)', () => {
     require('@database/queries/HistoryQueries').insertHistory.mockResolvedValue(
       undefined,
     );
-    require(
-      '@database/queries/NovelQueries',
-    ).switchNovelToLibraryQuery.mockResolvedValue(undefined);
+    require('@database/queries/NovelQueries').switchNovelToLibraryQuery.mockResolvedValue(
+      undefined,
+    );
 
     const pluginFetch = require('@services/plugin/fetch');
     pluginFetch.fetchChapter.mockResolvedValue('<p>فصل من الشبكة</p>');
     pluginFetch.fetchPage.mockResolvedValue(null);
 
-    require(
-      '@screens/reader/utils/sanitizeChapterText',
-    ).sanitizeChapterText.mockImplementation(
+    require('@screens/reader/utils/sanitizeChapterText').sanitizeChapterText.mockImplementation(
       (_p: unknown, _n: unknown, _c: unknown, html: unknown) => String(html),
     );
   });
 
   it('keeps the WebView document frozen through 50 dock toggles + inset changes', async () => {
     const view = render(
-      <NewMoonReaderScreen
-        route={{ params: { novel, chapter } } as any}
-      />,
+      <NewMoonReaderScreen route={{ params: { novel, chapter } } as any} />,
     );
 
     // Boot: the shell announces `ready` → the bridge flushes its queued boot
@@ -361,6 +353,7 @@ describe('NewMoonReaderScreen — 50-tap document stability (P0)', () => {
 
     const htmlAtBoot = captured.sources[captured.sources.length - 1].html;
     expect(htmlAtBoot).toContain('wor-body');
+    expect(captured.props?.decelerationRate).toBe('normal');
 
     // 50 taps: dock toggle (shell → RN) with the status bar following
     // (insets.top/bottom flip, exactly like the real hide/show cycle).
@@ -370,9 +363,7 @@ describe('NewMoonReaderScreen — 50-tap document stability (P0)', () => {
       sendShell({ t: 'dock', open });
       // Force a rerender so the screen re-evaluates the (frozen) memo.
       view.rerender(
-        <NewMoonReaderScreen
-            route={{ params: { novel, chapter } } as any}
-        />,
+        <NewMoonReaderScreen route={{ params: { novel, chapter } } as any} />,
       );
     }
 
@@ -396,9 +387,7 @@ describe('NewMoonReaderScreen — 50-tap document stability (P0)', () => {
 
   it('safe-area deltas travel through the bridge (settings patch), not the document', async () => {
     const view = render(
-      <NewMoonReaderScreen
-        route={{ params: { novel, chapter } } as any}
-      />,
+      <NewMoonReaderScreen route={{ params: { novel, chapter } } as any} />,
     );
     sendShell({ t: 'ready' });
     await waitFor(() => expect(injectedChapters()).toBe(1));
@@ -410,9 +399,7 @@ describe('NewMoonReaderScreen — 50-tap document stability (P0)', () => {
       mockInsets = { top: 0, bottom: 0 };
     });
     view.rerender(
-      <NewMoonReaderScreen
-        route={{ params: { novel, chapter } } as any}
-      />,
+      <NewMoonReaderScreen route={{ params: { novel, chapter } } as any} />,
     );
 
     const findLastSettings = () =>
@@ -432,9 +419,7 @@ describe('NewMoonReaderScreen — 50-tap document stability (P0)', () => {
 
   it('recovers from a real content-process kill: reload once, re-handshake, chapter re-sent once', async () => {
     render(
-      <NewMoonReaderScreen
-        route={{ params: { novel, chapter } } as any}
-      />,
+      <NewMoonReaderScreen route={{ params: { novel, chapter } } as any} />,
     );
     sendShell({ t: 'ready' });
     await waitFor(() => expect(injectedChapters()).toBe(1));
@@ -450,7 +435,11 @@ describe('NewMoonReaderScreen — 50-tap document stability (P0)', () => {
     sendShell({ t: 'ready' });
     await waitFor(() => expect(injectedChapters()).toBe(2));
     // settings/chapters/words/fav all re-sent after the handshake
-    expect(injectedKinds().filter(k => k === 'chapters').length).toBeGreaterThanOrEqual(2);
-    expect(captured.sources.every(s => s.html === captured.sources[0].html)).toBe(true);
+    expect(
+      injectedKinds().filter(k => k === 'chapters').length,
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      captured.sources.every(s => s.html === captured.sources[0].html),
+    ).toBe(true);
   });
 });

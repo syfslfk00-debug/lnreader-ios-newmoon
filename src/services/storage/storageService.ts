@@ -1,3 +1,4 @@
+import { Platform } from 'react-native';
 // lnreader-ios/src/services/storage/storageService.ts
 //
 // Data & Storage service: real measurements + real deletions.
@@ -54,6 +55,7 @@ export type StorageCategory = {
   /** true → rebuildable (safe to delete); false → personal data. */
   rebuildable: boolean;
   note?: string;
+  logical?: boolean;
 };
 
 export type StorageOverview = {
@@ -93,7 +95,9 @@ const measureImageCache = async (): Promise<number> => {
   try {
     const caches = NativeFile.ExternalCachesDirectoryPath;
     const entries = await NativeFile.readDir(caches);
-    const imageDirs = entries.filter(e => e.isDirectory && /image|photon/i.test(e.name));
+    const imageDirs = entries.filter(
+      e => e.isDirectory && /image|photon/i.test(e.name),
+    );
     let bytes = 0;
     for (const dir of imageDirs) {
       const stats = await NativeFile.getDirectoryStats(dir.path);
@@ -166,7 +170,8 @@ export const getStorageOverview = async (): Promise<StorageOverview> => {
       bytes: catStats(info, 'webview').bytes,
       files: catStats(info, 'webview').files,
       deletable: true,
-      rebuildable: true,
+      // This measurement includes retained website data as well as caches.
+      rebuildable: false,
       note: 'cookies وبيانات الدخول لا تُمس',
     },
     {
@@ -178,8 +183,11 @@ export const getStorageOverview = async (): Promise<StorageOverview> => {
     },
     {
       id: 'caches',
-      bytes: cachesStats.bytes,
-      files: cachesStats.files,
+      bytes: Math.max(
+        0,
+        cachesStats.bytes - imagesBytes - catStats(info, 'backups').bytes,
+      ),
+      files: Math.max(0, cachesStats.files - catStats(info, 'backups').files),
       deletable: true,
       rebuildable: true,
       note: 'يشمل الصور والنسخ الاحتياطية المؤقتة',
@@ -194,6 +202,7 @@ export const getStorageOverview = async (): Promise<StorageOverview> => {
     },
     {
       id: 'translations',
+      logical: true,
       // Logical memory bytes — see measureTranslationsMemory() for why this
       // deliberately is NOT translations.db's file size (already inside the
       // Library-wide `databases` walk above).
@@ -233,29 +242,46 @@ export const deleteStorageCategory = async (
 
   switch (id) {
     case 'images': {
+      const before = await measureImageCache();
       // expo-image owns its cache — clear through its own API.
       await Image.clearDiskCache().catch(e =>
         errors.push(String(e?.message ?? e)),
       );
+      freedBytes = Math.max(0, before - (await measureImageCache()));
       break;
     }
     case 'backups': {
-      const before = await NativeFile.getDirectoryStats(CACHE_DIR_PATH).catch(
-        () => null,
-      );
+      const paths = [
+        CACHE_DIR_PATH,
+        CACHE_DIR_PATH + '.zip',
+        CACHE_DIR_PATH + '-source.zip',
+      ];
+      let before = 0,
+        after = 0;
+      for (const path of paths) {
+        before += (await NativeFile.getDirectoryStats(path)).bytes;
+      }
       await clearBackupCache();
-      const after = await NativeFile.getDirectoryStats(CACHE_DIR_PATH).catch(
-        () => null,
-      );
-      freedBytes = Math.max(0, (before?.bytes ?? 0) - (after?.bytes ?? 0));
+      for (const path of paths.slice(1)) {
+        try {
+          if (await NativeFile.exists(path)) await NativeFile.unlink(path);
+        } catch (error) {
+          errors.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+      for (const path of paths) {
+        after += (await NativeFile.getDirectoryStats(path)).bytes;
+      }
+      freedBytes = Math.max(0, before - after);
       break;
     }
     case 'webview': {
-      // Rebuildable web caches ONLY — cookies / login data are NOT stored in
-      // Library/WebKit/Blobs and are never touched.
-      const result = await NativeFile.deleteDirectoryContents(webkitDir());
-      freedBytes = result.deletedBytes;
-      errors.push(...result.errors);
+      if (Platform.OS === 'ios') {
+        const before = await NativeFile.getDirectoryStats(webkitDir());
+        await NativeFile.clearWebViewCache();
+        const after = await NativeFile.getDirectoryStats(webkitDir());
+        freedBytes = Math.max(0, before.bytes - after.bytes);
+      }
       break;
     }
     case 'crashLogs': {
@@ -303,7 +329,30 @@ export const deleteStorageCategory = async (
       }
       break;
     }
-    case 'downloads':
+    case 'downloads': {
+      const before = await NativeFile.getDirectoryStats(NOVEL_STORAGE);
+      const downloaded = await getDownloadedChapters();
+      const groups = new Map<number, { pluginId: string; ids: number[] }>();
+      for (const chapter of downloaded) {
+        const group = groups.get(chapter.novelId) ?? {
+          pluginId: chapter.pluginId,
+          ids: [],
+        };
+        group.ids.push(chapter.id);
+        groups.set(chapter.novelId, group);
+      }
+      for (const [novelId, group] of groups) {
+        try {
+          await deleteChapters(group.pluginId, novelId, group.ids);
+        } catch (error) {
+          errors.push(error instanceof Error ? error.message : String(error));
+        }
+      }
+      const after = await NativeFile.getDirectoryStats(NOVEL_STORAGE);
+      freedBytes = Math.max(0, before.bytes - after.bytes);
+      if (after.bytes > 0 && !errors.length) errors.push('files-remained');
+      break;
+    }
     case 'databases':
       throw new Error(
         'downloads/databases are managed through dedicated flows — use deleteNovelChapters / library screens',
@@ -400,7 +449,7 @@ export const deleteNovelChapters = async (
     c => c.novelId === novel.id,
   );
   if (!downloaded.length) {
-    return { freedBytes: 0, errors: [] };
+    return { freedBytes: 0, errors: beforeBytes > 0 ? ['files-remained'] : [] };
   }
   await deleteChapters(
     novel.pluginId,

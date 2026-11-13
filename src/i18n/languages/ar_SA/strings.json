@@ -207,7 +207,8 @@
     "selfHostDesc": "نسخ احتياطي إلى خادمك الخاص",
     "uploadingData": "رفع البيانات",
     "uploadingSelectedFiles": "جارٍ رفع الملفات المحددة",
-    "uploadingDownloadedFiles": "رفع الملفات المحملة"
+    "uploadingDownloadedFiles": "رفع الملفات المحملة",
+    "googleSetupRequired": "تسجيل الدخول إلى Google Drive غير متاح في هذه النسخة. يحتاج مطوّر التطبيق إلى إعداد تسجيل الدخول لنظام iOS."
   },
   "browse": "تصفح",
   "browseScreen": {
@@ -1218,7 +1219,7 @@
     "aiMaxRequests": "أقصى عدد طلبات للنموذج في الفصل",
     "aiMaxRequestsDesc": "يُرسل الفصل بطلب واحد إن أمكن، وإلا يُقسم إلى أجزاء كبيرة. الطلبات الزائدة عن هذا الحد تحتاج موافقتك.",
     "aiStreaming": "الترجمة اللحظية (بث تدريجي)",
-    "aiStreamingDesc": "اعرض الفقرات وأنا تُولَّد. لمزودي OpenAI المتوافقين فقط.",
+    "aiStreamingDesc": "اعرض النص أثناء وصوله. يدعم مزودي OpenAI المتوافقين وواجهة Gemini الرسمية.",
     "budgetHeader": "ميزانية الترجمة",
     "budgetRequests": "طلبات الذكاء الاصطناعي",
     "budgetToday": "اليوم",

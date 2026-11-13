@@ -1,6 +1,7 @@
 import ExpoModulesCore
 import Foundation
 import UniformTypeIdentifiers
+import WebKit
 
 /**
  * iOS implementation of the NativeFile module.
@@ -14,6 +15,8 @@ import UniformTypeIdentifiers
  *    across launches (mirrors Android's persisted SAF tree URIs).
  */
 public class NativeFileModule: Module {
+  private let fileManager = FileManager.default
+  private var scrollProbe: WebViewScrollObserver?
   /// UserDefaults suite storing security-scoped bookmarks keyed by path.
   private var bookmarksDefaults: UserDefaults? {
     UserDefaults(suiteName: "NativeFileBookmarks")
@@ -21,6 +24,37 @@ public class NativeFileModule: Module {
 
   public func definition() -> ModuleDefinition {
     Name("NativeFile")
+    Events("onWebViewScrollProbe")
+
+    AsyncFunction("startWebViewScrollProbe") { (promise: Promise) in
+      #if targetEnvironment(simulator)
+      DispatchQueue.main.async {
+        func attach(attempt: Int) {
+          let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap { $0.windows }
+          func find(_ view: UIView) -> WKWebView? {
+            if let web = view as? WKWebView, web.window != nil, !web.isHidden { return web }
+            for child in view.subviews { if let web = find(child) { return web } }
+            return nil
+          }
+          if let web = windows.compactMap({ find($0) }).first {
+            self.scrollProbe = WebViewScrollObserver(web.scrollView) { [weak self] metrics in
+              self?.sendEvent("onWebViewScrollProbe", metrics.mapValues { $0 as Any? })
+            }
+            promise.resolve(nil)
+          } else if attempt < 100 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { attach(attempt: attempt + 1) }
+          } else { promise.reject("E2E_WEBVIEW_MISSING", "No visible WKWebView") }
+        }
+        attach(attempt: 0)
+      }
+      #else
+      promise.reject("E2E_DISABLED", "Scroll probes are simulator-only")
+      #endif
+    }
+
+    Function("stopWebViewScrollProbe") {
+      DispatchQueue.main.async { self.scrollProbe = nil }
+    }
 
     Function("writeFile") { (path: String, content: String) in
       try self.withSecurityScope(path: path) { url in
@@ -34,33 +68,46 @@ public class NativeFileModule: Module {
       }
     }
 
-    Function("copyFile") { (sourcePath: String, destPath: String) in
-      let fileManager = FileManager.default
-      let sourceURL = URL(fileURLWithPath: sourcePath)
-      let destinationURL = URL(fileURLWithPath: destPath)
-
-      if fileManager.fileExists(atPath: destinationURL.path) {
-        try fileManager.removeItem(at: destinationURL)
+    AsyncFunction("copyFile") { (sourcePath: String, destPath: String) in
+      try self.withSecurityScope(path: sourcePath) { sourceURL in
+        try self.withSecurityScope(path: destPath) { destinationURL in
+          let coordinator = NSFileCoordinator()
+          var coordinationError: NSError?
+          var copyError: Error?
+          coordinator.coordinate(readingItemAt: sourceURL, options: [], writingItemAt: destinationURL, options: .forReplacing, error: &coordinationError) { source, destination in
+            do {
+              guard source.standardizedFileURL != destination.standardizedFileURL else { throw CocoaError(.fileWriteInvalidFileName) }
+              _ = try self.copyFileToDirectory(sourcePath: source.path, directoryUrl: destination.deletingLastPathComponent(), fileName: destination.lastPathComponent, replace: true)
+            } catch { copyError = error }
+          }
+          if let error = coordinationError { throw error }
+          if let error = copyError { throw error }
+        }
       }
-      try fileManager.copyItem(at: sourceURL, to: destinationURL)
     }
 
     AsyncFunction("copyFileToDirectory") { (sourcePath: String, directoryUri: String, fileName: String, mimeType: String, replace: Bool) -> [String: Any] in
       _ = mimeType
       return try self.withSecurityScope(path: directoryUri) { directory in
-        try self.copyFileToDirectory(
-          sourcePath: sourcePath,
-          directoryUrl: directory,
-          fileName: fileName,
-          replace: replace
-        )
+        let coordinator = NSFileCoordinator()
+        var coordinationError: NSError?
+        var result: [String: Any]?
+        var copyError: Error?
+        coordinator.coordinate(writingItemAt: directory, options: .forMerging, error: &coordinationError) { target in
+          do { result = try self.copyFileToDirectory(sourcePath: sourcePath, directoryUrl: target, fileName: fileName, replace: replace) }
+          catch { copyError = error }
+        }
+        if let error = coordinationError { throw error }
+        if let error = copyError { throw error }
+        guard let result = result else { throw CocoaError(.fileWriteUnknown) }
+        return result
       }
     }
 
     Function("moveFile") { (sourcePath: String, destPath: String) in
       let fileManager = FileManager.default
-      let sourceURL = URL(fileURLWithPath: sourcePath)
-      let destinationURL = URL(fileURLWithPath: destPath)
+      let sourceURL = Self.fileURL(sourcePath)
+      let destinationURL = Self.fileURL(destPath)
 
       if fileManager.fileExists(atPath: destinationURL.path) {
         try fileManager.removeItem(at: destinationURL)
@@ -69,11 +116,11 @@ public class NativeFileModule: Module {
     }
 
     Function("exists") { (filePath: String) in
-      FileManager.default.fileExists(atPath: filePath)
+      FileManager.default.fileExists(atPath: Self.fileURL(filePath).path)
     }
 
     Function("mkdir") { (filePath: String) in
-      try FileManager.default.createDirectory(atPath: filePath, withIntermediateDirectories: true, attributes: nil)
+      try FileManager.default.createDirectory(atPath: Self.fileURL(filePath).path, withIntermediateDirectories: true, attributes: nil)
     }
 
     Function("unlink") { (filePath: String) in
@@ -83,9 +130,9 @@ public class NativeFileModule: Module {
     }
 
     Function("readDir") { (dirPath: String) -> [[String: Any]] in
-      let contents = try FileManager.default.contentsOfDirectory(atPath: dirPath)
+      let contents = try FileManager.default.contentsOfDirectory(atPath: Self.fileURL(dirPath).path)
       return contents.map { fileName in
-        let path = (dirPath as NSString).appendingPathComponent(fileName)
+        let path = (Self.fileURL(dirPath).path as NSString).appendingPathComponent(fileName)
         var isDirectory: ObjCBool = false
         FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory)
         return [
@@ -128,7 +175,7 @@ public class NativeFileModule: Module {
         // The URL-based export picker suggests the staged file's name
         // automatically (the temp file is named after `filename`).
         let picker = UIDocumentPickerViewController(forExporting: [tempURL], asCopy: false)
-        Self.presentPicker(picker) { urls in
+        Self.presentPicker(picker, failure: { promise.reject("PICKER_UNAVAILABLE", "Cannot present the Files picker") }) { urls in
           guard let url = urls.first else {
             try? FileManager.default.removeItem(at: tempURL)
             promise.reject("USER_CANCELED", "No document selected")
@@ -144,13 +191,51 @@ public class NativeFileModule: Module {
       }
     }
 
+    AsyncFunction("exportFile") { (sourcePath: String, filename: String, promise: Promise) in
+      DispatchQueue.global(qos: .userInitiated).async {
+        let stagingDirectory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        do {
+          try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: true)
+          let staged = stagingDirectory.appendingPathComponent((filename as NSString).lastPathComponent)
+          try FileManager.default.copyItem(at: Self.fileURL(sourcePath), to: staged)
+          DispatchQueue.main.async {
+            let picker = UIDocumentPickerViewController(forExporting: [staged], asCopy: true)
+            Self.presentPicker(picker, failure: {
+              try? FileManager.default.removeItem(at: stagingDirectory)
+              promise.reject("PICKER_UNAVAILABLE", "Cannot present the Files picker")
+            }) { urls in
+              defer { try? FileManager.default.removeItem(at: stagingDirectory) }
+              guard let url = urls.first else {
+                promise.reject("USER_CANCELED", "Export cancelled")
+                return
+              }
+              promise.resolve(url.path)
+            }
+          }
+        } catch {
+          try? FileManager.default.removeItem(at: stagingDirectory)
+          promise.reject("EXPORT_FAILED", error.localizedDescription)
+        }
+      }
+    }
+
+    AsyncFunction("clearWebViewCache") { (promise: Promise) in
+      DispatchQueue.main.async {
+        let cacheTypes: Set<String> = [WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache, WKWebsiteDataTypeOfflineWebApplicationCache]
+        WKWebsiteDataStore.default().removeData(ofTypes: cacheTypes, modifiedSince: .distantPast) {
+          promise.resolve(nil)
+        }
+      }
+    }
+
     /// Opens a user-chosen document (equivalent of Android's ACTION_OPEN_DOCUMENT).
     /// Returns a readable file path.
     AsyncFunction("pickDocument") { (mimeType: String, promise: Promise) in
       DispatchQueue.main.async {
         let utType = Self.utType(forMimeType: mimeType) ?? .data
-        let picker = UIDocumentPickerViewController(forOpeningContentTypes: [utType], asCopy: true)
-        Self.presentPicker(picker) { urls in
+        let types: [UTType] = mimeType == "application/zip" ? [.zip, .archive] : [utType]
+        let picker = UIDocumentPickerViewController(forOpeningContentTypes: types, asCopy: true)
+        Self.presentPicker(picker, failure: { promise.reject("PICKER_UNAVAILABLE", "Cannot present the Files picker") }) { urls in
           guard let url = urls.first else {
             promise.reject("USER_CANCELED", "No document selected")
             return
@@ -168,7 +253,7 @@ public class NativeFileModule: Module {
           forOpeningContentTypes: [.folder],
           asCopy: false
         )
-        Self.presentPicker(picker) { urls in
+        Self.presentPicker(picker, failure: { promise.reject("PICKER_UNAVAILABLE", "Cannot present the Files picker") }) { urls in
           guard let url = urls.first else {
             promise.reject("USER_CANCELED", "No directory selected")
             return
@@ -192,6 +277,15 @@ public class NativeFileModule: Module {
     Constant("ExternalCachesDirectoryPath") {
       let paths = NSSearchPathForDirectoriesInDomains(.cachesDirectory, .userDomainMask, true)
       return paths.first ?? ""
+    }
+
+    Constant("E2ESurface") {
+      #if targetEnvironment(simulator)
+      let mode = ProcessInfo.processInfo.environment["MOON_E2E_SURFACE"] ?? ""
+      return ["reader", "browser"].contains(mode) ? mode : ""
+      #else
+      return ""
+      #endif
     }
 
     Constant("BundlePath") {
@@ -366,6 +460,23 @@ public class NativeFileModule: Module {
       ]
     }
 
+    if var backupStats = measured["backups"] as? [String: Any] {
+      let base = (caches as NSString).appendingPathComponent("BackupData")
+      let archives = [Self.recursiveStats(at: base + ".zip"), Self.recursiveStats(at: base + "-source.zip")]
+      backupStats["bytes"] = (backupStats["bytes"] as? Int64 ?? 0) + archives.reduce(Int64(0)) { $0 + $1.bytes }
+      backupStats["files"] = (backupStats["files"] as? Int64 ?? 0) + archives.reduce(Int64(0)) { $0 + $1.files }
+      measured["backups"] = backupStats
+    }
+
+    // Library contains WebKit, Logs and Caches. Report its remaining personal
+    // data separately so the distribution never counts those bytes twice.
+    if var personal = measured["databases"] as? [String: Any] {
+      let overlapping = ["caches", "webview", "crashLogs"].compactMap { measured[$0] as? [String: Any] }
+      personal["bytes"] = max(0, (personal["bytes"] as? Int64 ?? 0) - overlapping.reduce(Int64(0)) { $0 + ($1["bytes"] as? Int64 ?? 0) })
+      personal["files"] = max(0, (personal["files"] as? Int64 ?? 0) - overlapping.reduce(Int64(0)) { $0 + ($1["files"] as? Int64 ?? 0) })
+      measured["databases"] = personal
+    }
+
     // App container total (Documents + Library + tmp walked once).
     let containerStats = Self.recursiveStats(at: home)
 
@@ -399,7 +510,7 @@ public class NativeFileModule: Module {
     }
 
     let fileManager = FileManager.default
-    let sourceURL = URL(fileURLWithPath: sourcePath)
+    let sourceURL = Self.fileURL(sourcePath)
     let destinationURL = directoryUrl.appendingPathComponent(fileName)
     let stagingURL = directoryUrl.appendingPathComponent(".\(fileName).\(UUID().uuidString).tmp")
 
@@ -409,6 +520,10 @@ public class NativeFileModule: Module {
         code: 2,
         userInfo: [NSLocalizedDescriptionKey: "Destination directory does not exist"]
       )
+    }
+    var destinationIsDirectory: ObjCBool = false
+    if fileManager.fileExists(atPath: destinationURL.path, isDirectory: &destinationIsDirectory), destinationIsDirectory.boolValue {
+      throw CocoaError(.fileWriteInvalidFileName)
     }
     if fileManager.fileExists(atPath: destinationURL.path) && !replace {
       throw CocoaError(.fileWriteFileExists)
@@ -482,7 +597,7 @@ public class NativeFileModule: Module {
       )
     }
 
-    let destinationURL = URL(fileURLWithPath: destPath)
+    let destinationURL = Self.fileURL(destPath)
     let parentDirectory = destinationURL.deletingLastPathComponent()
     try FileManager.default.createDirectory(at: parentDirectory, withIntermediateDirectories: true)
     try data.write(to: destinationURL, options: .atomic)
@@ -491,12 +606,10 @@ public class NativeFileModule: Module {
   // MARK: - Security-scoped bookmarks
 
   private func storeBookmarkIfSecurityScoped(_ url: URL) {
-    let needsBookmark = url.path.starts(with: "/private/var/mobile")
-      || url.path.starts(with: "/var/mobile")
-    guard needsBookmark else {
-      return
-    }
+    guard !url.standardizedFileURL.path.hasPrefix(NSHomeDirectory() + "/") else { return }
     do {
+      let started = url.startAccessingSecurityScopedResource()
+      defer { if started { url.stopAccessingSecurityScopedResource() } }
       let bookmark = try url.bookmarkData()
       bookmarksDefaults?.set(bookmark, forKey: url.path)
     } catch {
@@ -504,28 +617,20 @@ public class NativeFileModule: Module {
     }
   }
 
-  private func resolveSecurityScopedURL(for path: String) -> URL? {
-    let url = URL(fileURLWithPath: path)
-    if FileManager.default.fileExists(atPath: path) {
-      return url
-    }
-    // The file itself may not exist yet (e.g. creating a new file inside a
-    // picked directory) — fall back to the closest bookmarked ancestor.
-    var candidate = url.deletingLastPathComponent()
+  private func resolveSecurityScopedURL(for path: String) -> (scope: URL, target: URL)? {
+    let url = Self.fileURL(path)
+    var candidate = url
     while candidate.path.count > 1 {
-      if let bookmark = bookmarksDefaults?.data(forKey: candidate.path) {
-        return resolveBookmark(bookmark, forKey: candidate.path)
+      if let bookmark = bookmarksDefaults?.data(forKey: candidate.path),
+         let resolved = resolveBookmark(bookmark, forKey: candidate.path) {
+        let suffix = String(url.path.dropFirst(candidate.path.count)).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return (resolved, suffix.isEmpty ? resolved : resolved.appendingPathComponent(suffix))
       }
       let parent = candidate.deletingLastPathComponent()
-      if parent.path == candidate.path {
-        break
-      }
+      if parent.path == candidate.path { break }
       candidate = parent
     }
-    guard let bookmark = bookmarksDefaults?.data(forKey: path) else {
-      return nil
-    }
-    return resolveBookmark(bookmark, forKey: path)
+    return nil
   }
 
   private func resolveBookmark(_ bookmark: Data, forKey key: String) -> URL? {
@@ -551,18 +656,16 @@ public class NativeFileModule: Module {
   /// Runs `body` with security scope started when the path belongs to a
   /// user-picked (sandboxed) location. Plain container paths run untouched.
   private func withSecurityScope<T>(path: String, body: (URL) throws -> T) throws -> T {
-    let url = URL(fileURLWithPath: path)
-    let scoped = resolveSecurityScopedURL(for: path)
-    var started = false
-    if let scoped = scoped {
-      started = scoped.startAccessingSecurityScopedResource()
-    }
-    defer {
-      if started {
-        scoped?.stopAccessingSecurityScopedResource()
-      }
-    }
-    return try body(url)
+    let url = Self.fileURL(path)
+    let scoped = resolveSecurityScopedURL(for: url.path)
+    let started = scoped?.scope.startAccessingSecurityScopedResource() ?? false
+    defer { if started { scoped?.scope.stopAccessingSecurityScopedResource() } }
+    return try body(scoped?.target ?? url)
+  }
+
+  private static func fileURL(_ path: String) -> URL {
+    if path.hasPrefix("file://"), let url = URL(string: path) { return url }
+    return URL(fileURLWithPath: path)
   }
 
   // MARK: - Picker presentation
@@ -577,6 +680,7 @@ public class NativeFileModule: Module {
 
   private static func presentPicker(
     _ picker: UIDocumentPickerViewController,
+    failure: @escaping () -> Void,
     completion: @escaping ([URL]) -> Void
   ) {
     let delegate = PickerDelegateHolder(completion: completion)
@@ -589,27 +693,31 @@ public class NativeFileModule: Module {
     )
     picker.allowsMultipleSelection = false
 
-    let rootViewController = UIApplication.shared.connectedScenes
-      .compactMap { $0 as? UIWindowScene }
-      .flatMap { $0.windows }
-      .first(where: { $0.isKeyWindow })?
-      .rootViewController
-    if let rootViewController = rootViewController {
-      var presenter = rootViewController
-      while let next = presenter.presentedViewController {
-        presenter = next
+    func present(attempt: Int) {
+      let root = UIApplication.shared.connectedScenes
+        .compactMap { $0 as? UIWindowScene }
+        .filter { $0.activationState == .foregroundActive }
+        .flatMap { $0.windows }
+        .first(where: { $0.isKeyWindow })?.rootViewController
+      guard var presenter = root else { failure(); return }
+      while let next = presenter.presentedViewController { presenter = next }
+      if presenter.isBeingDismissed || presenter.isBeingPresented || presenter.view.window == nil {
+        guard attempt < 20 else { failure(); return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { present(attempt: attempt + 1) }
+        return
       }
       presenter.present(picker, animated: true)
-    } else {
-      completion([])
+      picker.presentationController?.delegate = delegate
     }
+    present(attempt: 0)
   }
 }
 
 /// Retains itself on the picker via associated objects and forwards the result.
-final class PickerDelegateHolder: NSObject, UIDocumentPickerDelegate {
+final class PickerDelegateHolder: NSObject, UIDocumentPickerDelegate, UIAdaptivePresentationControllerDelegate {
   static var associationKey = "NativeFilePickerDelegate"
 
+  private var completed = false
   private let completion: ([URL]) -> Void
 
   init(completion: @escaping ([URL]) -> Void) {
@@ -618,10 +726,56 @@ final class PickerDelegateHolder: NSObject, UIDocumentPickerDelegate {
   }
 
   func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
+    finish(urls)
+  }
+
+  private func finish(_ urls: [URL]) {
+    guard !completed else { return }
+    completed = true
     completion(urls)
   }
 
+  func presentationControllerDidDismiss(_ presentationController: UIPresentationController) { finish([]) }
+
   func documentPickerWasCancelled(_ controller: UIDocumentPickerViewController) {
-    completion([])
+    finish([])
+  }
+}
+
+/// UI-test instrumentation. A pan's actual .ended transition defines release;
+/// XCTest may wait for scrolling to settle before returning from a swipe.
+private final class WebViewScrollObserver: NSObject {
+  private weak var scrollView: UIScrollView?
+  private var observation: NSKeyValueObservation?
+  private var release: CGFloat?
+  private var coast: CGFloat = 0
+  private let publish: ([String: Double]) -> Void
+
+  init(_ scrollView: UIScrollView, publish: @escaping ([String: Double]) -> Void) {
+    self.scrollView = scrollView
+    self.publish = publish
+    super.init()
+    scrollView.panGestureRecognizer.addTarget(self, action: #selector(panChanged(_:)))
+    observation = scrollView.observe(\.contentOffset, options: [.new]) { [weak self] _, _ in self?.report() }
+    report()
+  }
+
+  @objc private func panChanged(_ pan: UIPanGestureRecognizer) {
+    if pan.state == .began { release = nil; coast = 0 }
+    else if pan.state == .ended { release = scrollView?.contentOffset.y }
+    else if pan.state == .cancelled || pan.state == .failed { release = nil }
+    report()
+  }
+
+  private func report() {
+    guard let scrollView = scrollView else { return }
+    let y = scrollView.contentOffset.y
+    if let release = release, !scrollView.isDragging { coast = max(coast, y - release) }
+    publish(["y": Double(y), "release": Double(release ?? -1), "coast": Double(coast)])
+  }
+
+  deinit {
+    scrollView?.panGestureRecognizer.removeTarget(self, action: #selector(panChanged(_:)))
+    observation?.invalidate()
   }
 }

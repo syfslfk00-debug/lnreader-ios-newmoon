@@ -1,3 +1,5 @@
+import { Platform } from 'react-native';
+import NativeFile from '@modules/native-file';
 import NativeBackgroundTasks from '@modules/native-background-tasks';
 import { askForPostNotificationsPermission } from '@utils/askForPostNoftificationsPermission';
 import {
@@ -27,6 +29,24 @@ const mockAskForPostNotificationsPermission = jest.mocked(
 );
 
 describe('automatic backup scheduling', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.replaceProperty(Platform, 'OS', 'android');
+  });
+
+  it('creates an app-owned default destination on iOS', async () => {
+    jest.replaceProperty(Platform, 'OS', 'ios');
+    await configureAutomaticBackups(12);
+    expect(NativeFile.mkdir).toHaveBeenCalledWith('/mock/documents/Backups');
+    expect(
+      mockNativeBackgroundTasks.scheduleAutomaticBackups,
+    ).toHaveBeenCalledWith(
+      12,
+      'notifications.LOCAL_BACKUP',
+      'common.preparing',
+      '/mock/documents/Backups',
+    );
+  });
   it('exposes the supported fixed intervals', () => {
     expect(AUTOMATIC_BACKUP_INTERVALS).toEqual([0, 6, 12, 24, 48, 168]);
   });

@@ -72,7 +72,8 @@ export type BackgroundTask =
   | {
       name: 'LOCAL_BACKUP';
       data: {
-        destinationUri: string;
+        destinationUri?: string;
+        exportName?: string;
         options?: BackupOptions;
         automatic?: boolean;
       };

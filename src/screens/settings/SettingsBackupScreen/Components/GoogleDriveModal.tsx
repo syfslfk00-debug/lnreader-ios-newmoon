@@ -1,6 +1,7 @@
+import Constants from 'expo-constants';
 import { useCallback, useEffect, useState } from 'react';
 import { ThemeColors } from '@theme/types';
-import { StyleSheet, Text, View, Image } from 'react-native';
+import { Platform, StyleSheet, Text, View, Image } from 'react-native';
 import { TextInput } from 'react-native-paper';
 import { GoogleSignin, User } from '@react-native-google-signin/google-signin';
 import { Button, Dialog, EmptyView } from '@components';
@@ -19,6 +20,9 @@ import {
   type BackupOptions,
 } from '@services/backup/options';
 import { BackupOptionsList } from './BackupOptions';
+
+const GOOGLE_IOS_CLIENT_ID: string =
+  Constants.expoConfig?.extra?.googleIosClientId ?? '';
 
 enum BackupModal {
   UNAUTHORIZED,
@@ -72,23 +76,39 @@ function UnAuthorized({
   setBackupModal: (backupModal: BackupModal) => void;
   setUser: (user?: User | null) => void;
 }) {
-  const signIn = () => {
-    GoogleSignin.hasPlayServices()
-      .then(hasPlayServices => {
-        if (hasPlayServices) {
-          return GoogleSignin.signIn();
-        }
-      })
-      .then(response => {
-        setUser(response?.data);
+  const [busy, setBusy] = useState(false);
+  const signIn = async () => {
+    if (busy) return;
+    if (Platform.OS === 'ios' && !GOOGLE_IOS_CLIENT_ID) {
+      showToast(getString('backupScreen.googleSetupRequired'));
+      return;
+    }
+    setBusy(true);
+    try {
+      if (Platform.OS === 'android') {
+        await GoogleSignin.hasPlayServices({
+          showPlayServicesUpdateDialog: true,
+        });
+      }
+      const response = await GoogleSignin.signIn();
+      if (response.type === 'success') {
+        setUser(response.data);
         setBackupModal(BackupModal.AUTHORIZED);
-      });
+      }
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'SIGN_IN_CANCELLED') {
+        showToast(error instanceof Error ? error.message : String(error));
+      }
+    } finally {
+      setBusy(false);
+    }
   };
   return (
     <Button
       title={getString('common.signIn')}
       style={[styles.btnOutline, { borderColor: theme.outline }]}
       onPress={signIn}
+      disabled={busy}
     />
   );
 }
@@ -255,7 +275,9 @@ export default function GoogleDriveModal({
   const [backupModal, setBackupModal] = useState(BackupModal.UNAUTHORIZED);
   const [user, setUser] = useState<User | null | undefined>(null);
   useEffect(() => {
+    if (Platform.OS === 'ios' && !GOOGLE_IOS_CLIENT_ID) return;
     GoogleSignin.configure({
+      ...(Platform.OS === 'ios' ? { iosClientId: GOOGLE_IOS_CLIENT_ID } : {}),
       scopes: ['https://www.googleapis.com/auth/drive.file'],
     });
     const isSignedIn = GoogleSignin.hasPreviousSignIn();

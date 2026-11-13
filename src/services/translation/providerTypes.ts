@@ -23,6 +23,8 @@ export interface AIChoice {
   id: string;
   name: string;
   metadata?: string;
+  inputTokenLimit?: number;
+  outputTokenLimit?: number;
 }
 
 export interface AIProject {

@@ -46,6 +46,16 @@ type NativeFileModule = {
   ExternalCachesDirectoryPath: string;
   /** iOS only: absolute path of the main app bundle. */
   BundlePath: string;
+  /** Simulator-only launch fixture, always empty in device builds. */
+  E2ESurface?: string;
+  startWebViewScrollProbe(): Promise<void>;
+  stopWebViewScrollProbe(): void;
+  addListener(
+    event: 'onWebViewScrollProbe',
+    listener: (metrics: { y: number; release: number; coast: number }) => void,
+  ): { remove(): void };
+  exportFile(sourcePath: string, filename: string): Promise<string>;
+  clearWebViewCache(): Promise<void>;
   createDocument(filename: string, mimeType: string): Promise<string>;
   pickDocument(mimeType: string): Promise<string>;
   pickDirectory(): Promise<DirectorySelection>;

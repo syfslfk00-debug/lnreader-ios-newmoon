@@ -73,6 +73,54 @@ describe('local selective backup', () => {
     );
   });
 
+  it('exports a completed ZIP on iOS, after the final archive finishes', async () => {
+    jest.clearAllMocks();
+    jest
+      .mocked(prepareBackupData)
+      .mockResolvedValue({ failedNovelCount: 0, failedSectionCount: 0 });
+    await createBackup({
+      exportName: 'backup.zip',
+      options: {
+        library: true,
+        settings: true,
+        plugins: false,
+        downloadedFiles: false,
+      },
+    });
+    expect(NativeFile.exportFile).toHaveBeenCalledWith(
+      '/cache/BackupData.zip',
+      'backup.zip',
+    );
+    expect(
+      jest.mocked(NativeFile.exportFile).mock.invocationCallOrder[0],
+    ).toBeGreaterThan(
+      jest.mocked(NativeZipArchive.zip).mock.invocationCallOrder[0],
+    );
+    expect(NativeFile.copyFile).not.toHaveBeenCalled();
+  });
+
+  it('writes automatic backups inside the selected directory', async () => {
+    jest.clearAllMocks();
+    await createBackup({
+      destinationUri: '/selected/backups',
+      automatic: true,
+      options: {
+        library: true,
+        settings: true,
+        plugins: false,
+        downloadedFiles: false,
+      },
+    });
+    expect(NativeFile.copyFileToDirectory).toHaveBeenCalledWith(
+      '/cache/BackupData.zip',
+      '/selected/backups',
+      expect.stringMatching(/^lnreader_backup_.*\.zip$/),
+      'application/zip',
+      false,
+    );
+    expect(NativeFile.copyFile).not.toHaveBeenCalled();
+  });
+
   it('loads restored plugins after their archive is extracted', async () => {
     const restoreResult = {
       novelCount: 1,
@@ -94,6 +142,13 @@ describe('local selective backup', () => {
         },
       },
     };
+    jest
+      .mocked(NativeFile.readFile)
+      .mockImplementation(async path =>
+        path.endsWith('/Version.json')
+          ? JSON.stringify(restoreResult.manifest)
+          : '[]',
+      );
     jest.mocked(restoreData).mockResolvedValueOnce(restoreResult);
     jest.mocked(NativeFile.exists).mockResolvedValue(true);
     jest.mocked(NativeFile.copyFile).mockResolvedValue(undefined);

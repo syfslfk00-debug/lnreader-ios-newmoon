@@ -1,3 +1,4 @@
+import { directionStyleFor } from '@utils/textDirection';
 import React, { memo, useCallback, useMemo, ReactNode } from 'react';
 import { View, Text, StyleSheet, Pressable } from 'react-native';
 import {
@@ -141,6 +142,7 @@ const ChapterItem: React.FC<ChapterItemProps> = ({
               <Text
                 style={[
                   styles.groupedChapterNovelName,
+                  directionStyleFor(novelName),
                   { color: unread ? theme.onSurface : theme.outline },
                 ]}
                 numberOfLines={1}
@@ -162,6 +164,13 @@ const ChapterItem: React.FC<ChapterItemProps> = ({
                 style={[
                   isGrouped ? styles.textSmall : styles.textNormal,
                   { color: titleColor },
+                  directionStyleFor(
+                    showChapterTitles
+                      ? translatedName ?? name
+                      : getString('novelScreen.chapterChapnum', {
+                          num: chapterNumber,
+                        }),
+                  ),
                   styles.flex1,
                 ]}
                 numberOfLines={1}

@@ -1,3 +1,4 @@
+import { isPickerCancellation } from '@utils/fileErrors';
 import { DeviceEventEmitter } from 'react-native';
 
 import NativeBackgroundTasks from '@modules/native-background-tasks';
@@ -168,6 +169,11 @@ export class BackgroundTaskQueue {
           getString('notifications.taskCompleted'),
       );
     } catch (error) {
+      if (isPickerCancellation(error)) {
+        await NativeBackgroundTasks.cancel(taskId);
+        this.store(this.getSnapshot().filter(item => item.id !== taskId));
+        return;
+      }
       await NativeBackgroundTasks.fail(
         taskId,
         getString('notifications.taskFailed', {

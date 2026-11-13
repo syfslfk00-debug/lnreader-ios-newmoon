@@ -1,3 +1,5 @@
+import { Platform } from 'react-native';
+import NativeFile from '@modules/native-file';
 import NativeBackgroundTasks from '@modules/native-background-tasks';
 import { getString } from '@i18n/translations';
 import { askForPostNotificationsPermission } from '@utils/askForPostNoftificationsPermission';
@@ -16,6 +18,10 @@ export const configureAutomaticBackups = async (
     return;
   }
 
+  if (Platform.OS === 'ios' && !directoryUri) {
+    directoryUri = `${NativeFile.DocumentDirectoryPath}/Backups`;
+    await NativeFile.mkdir(directoryUri);
+  }
   await askForPostNotificationsPermission();
   await NativeBackgroundTasks.scheduleAutomaticBackups(
     intervalHours,

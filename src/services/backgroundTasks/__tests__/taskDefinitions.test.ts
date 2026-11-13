@@ -70,6 +70,20 @@ describe('background task definitions', () => {
     );
   });
 
+  it('serializes backup and restore operations that share the staging folder', () => {
+    expect(
+      getBackgroundTaskQueueName({
+        name: 'LOCAL_BACKUP',
+        data: { destinationUri: '/backup.zip' },
+      }),
+    ).toBe(
+      getBackgroundTaskQueueName({
+        name: 'LOCAL_RESTORE',
+        data: { sourceUri: '/backup.zip' },
+      }),
+    );
+  });
+
   it('uses independent lanes for different non-download task types', () => {
     expect(getBackgroundTaskQueueName({ name: 'UPDATE_LIBRARY' })).not.toBe(
       getBackgroundTaskQueueName({

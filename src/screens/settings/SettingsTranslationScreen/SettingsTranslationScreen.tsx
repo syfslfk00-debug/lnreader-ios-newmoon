@@ -100,7 +100,12 @@ const detectCredentialKind = (value: string): ImportedCredential => {
   const masked = maskCredential(text);
   // ChatGPT access token (JWT).
   if (/^ey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}\./.test(text)) {
-    return { kind: 'token', masked, value: text, suggestedKind: 'chatGPTAccount' };
+    return {
+      kind: 'token',
+      masked,
+      value: text,
+      suggestedKind: 'chatGPTAccount',
+    };
   }
   // Gemini API key.
   if (/^AIza[\w-]{10,}$/.test(text)) {
@@ -108,7 +113,12 @@ const detectCredentialKind = (value: string): ImportedCredential => {
   }
   // OpenAI-compatible bearer key.
   if (/^sk-[\w-]{8,}$/.test(text)) {
-    return { kind: 'token', masked, value: text, suggestedKind: 'openAICompatible' };
+    return {
+      kind: 'token',
+      masked,
+      value: text,
+      suggestedKind: 'openAICompatible',
+    };
   }
   // Cookie header: several key=value pairs separated by ';' with no whitespace.
   if (
@@ -117,7 +127,12 @@ const detectCredentialKind = (value: string): ImportedCredential => {
     text.includes('=') &&
     text.includes(';')
   ) {
-    return { kind: 'cookie', masked, value: text, suggestedKind: 'geminiAccount' };
+    return {
+      kind: 'cookie',
+      masked,
+      value: text,
+      suggestedKind: 'geminiAccount',
+    };
   }
   return { kind: 'unknown', masked, value: text, suggestedKind: null };
 };
@@ -145,8 +160,8 @@ const importedKindLabel = (kind: ImportedKind): string =>
     kind === 'token'
       ? 'translationScreen.importKindToken'
       : kind === 'cookie'
-        ? 'translationScreen.importKindCookie'
-        : 'translationScreen.importKindUnknown',
+      ? 'translationScreen.importKindCookie'
+      : 'translationScreen.importKindUnknown',
   );
 
 interface ProviderEditorDialogProps {
@@ -213,7 +228,15 @@ const ProviderEditorDialog = ({
             key={kind.id}
             title={kind.title}
             right={provider.kind === kind.id ? 'check' : undefined}
-            onPress={() => onChange({ kind: kind.id })}
+            onPress={() =>
+              onChange({
+                kind: kind.id,
+                model: '',
+                models: [],
+                chats: [],
+                projects: [],
+              })
+            }
             theme={theme}
           />
         ))}
@@ -280,6 +303,22 @@ const ProviderEditorDialog = ({
         <Text style={[styles.label, { color: theme.onSurfaceVariant }]}>
           {getString('translationScreen.models')}
         </Text>
+        {(provider.kind === 'geminiAPI' ||
+          provider.kind === 'openAICompatible') && (
+          <TextInput
+            value={provider.model}
+            onChangeText={value =>
+              onChange({ model: value.trim().replace(/^models\//, '') })
+            }
+            autoCapitalize="none"
+            autoCorrect={false}
+            accessibilityLabel={getString('translationScreen.models')}
+            style={[
+              styles.input,
+              { color: theme.onSurface, borderColor: theme.outline },
+            ]}
+          />
+        )}
         {provider.models.length === 0 && (
           <Text style={[styles.caption, { color: theme.onSurfaceVariant }]}>
             {getString('translationScreen.noModels')}
@@ -378,8 +417,8 @@ const SettingsTranslation = ({ navigation }: TranslationSettingsProps) => {
   );
 
   // v3: usage budget + credential file import
-  const [usage, setUsage] = useState<TranslationUsageSnapshot | null>(
-    () => getUsage(),
+  const [usage, setUsage] = useState<TranslationUsageSnapshot | null>(() =>
+    getUsage(),
   );
   const [importedCredential, setImportedCredential] =
     useState<ImportedCredential | null>(null);
@@ -502,24 +541,30 @@ const SettingsTranslation = ({ navigation }: TranslationSettingsProps) => {
 
   const saveEditor = async () => {
     if (!editorProvider) return;
-    const draft = editorProvider;
-    const exists = providers.some(row => row.id === draft.id);
-    const nextProviders = exists
-      ? providers.map(row => (row.id === draft.id ? draft : row))
-      : [...providers, draft];
-    setProviders(nextProviders);
-    saveProviders(nextProviders);
-    const savedSecret = editorSecret.trim();
-    if (savedSecret.length > 0) await saveSecret(draft.id, savedSecret);
-    update({ providerID: draft.id });
-    setEditorSecret('');
-    setEditorProvider(null);
+    setBusy(true);
+    try {
+      const draft = editorProvider;
+      const exists = providers.some(row => row.id === draft.id);
+      const nextProviders = exists
+        ? providers.map(row => (row.id === draft.id ? draft : row))
+        : [...providers, draft];
+      const savedSecret = editorSecret.trim();
+      if (savedSecret.length > 0) await saveSecret(draft.id, savedSecret);
+      setProviders(nextProviders);
+      saveProviders(nextProviders);
+      update({ providerID: draft.id });
+      setEditorSecret('');
+      setEditorProvider(null);
+    } catch (error) {
+      showError(error);
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const selectEditorProvider = () => {
+  const selectEditorProvider = async () => {
     if (!editorProvider) return;
-    update({ providerID: editorProvider.id });
-    setEditorProvider(null);
+    await saveEditor();
   };
 
   const discoverEditorModels = async () => {
@@ -529,6 +574,7 @@ const SettingsTranslation = ({ navigation }: TranslationSettingsProps) => {
       const stored = await readSecret(editorProvider.id);
       const secret = editorSecret.trim() || stored.trim();
       const updated = await discoverProvider(editorProvider, secret);
+      if (editorSecret.trim()) await saveSecret(updated.id, secret);
       setEditorProvider(updated);
       setEditorHasSecret(secret.length > 0);
       const nextProviders = providers.some(row => row.id === updated.id)
@@ -571,19 +617,16 @@ const SettingsTranslation = ({ navigation }: TranslationSettingsProps) => {
   const deleteEditorProvider = () => {
     if (!editorProvider) return;
     const target = editorProvider;
-    confirmRemoval(
-      getString('translationScreen.deleteProviderMessage'),
-      () => {
-        const nextProviders = providers.filter(row => row.id !== target.id);
-        setProviders(nextProviders);
-        saveProviders(nextProviders);
-        void deleteSecret(target.id).catch(() => undefined);
-        if (prefs.providerID === target.id) {
-          update({ providerID: null });
-        }
-        setEditorProvider(null);
-      },
-    );
+    confirmRemoval(getString('translationScreen.deleteProviderMessage'), () => {
+      const nextProviders = providers.filter(row => row.id !== target.id);
+      setProviders(nextProviders);
+      saveProviders(nextProviders);
+      void deleteSecret(target.id).catch(() => undefined);
+      if (prefs.providerID === target.id) {
+        update({ providerID: null });
+      }
+      setEditorProvider(null);
+    });
   };
 
   const saveCloudflareToken = async () => {
@@ -859,9 +902,7 @@ const SettingsTranslation = ({ navigation }: TranslationSettingsProps) => {
                   </Text>
                 )}
               </View>
-              <Text
-                style={[styles.caption, { color: theme.onSurfaceVariant }]}
-              >
+              <Text style={[styles.caption, { color: theme.onSurfaceVariant }]}>
                 {getString('translationScreen.googleCloudCaption')}
               </Text>
             </View>
@@ -975,9 +1016,7 @@ const SettingsTranslation = ({ navigation }: TranslationSettingsProps) => {
               </Text>
               <TextInput
                 value={cloudflareConfig.instruction}
-                onChangeText={value =>
-                  updateCloudflare({ instruction: value })
-                }
+                onChangeText={value => updateCloudflare({ instruction: value })}
                 multiline
                 textAlignVertical="top"
                 style={[
@@ -1194,7 +1233,9 @@ const SettingsTranslation = ({ navigation }: TranslationSettingsProps) => {
             label={getString('translationScreen.autoScopeBrowser')}
             description={getString('translationScreen.autoScopeBrowserDesc')}
             value={prefs.autoScopeBrowser}
-            onPress={() => update({ autoScopeBrowser: !prefs.autoScopeBrowser })}
+            onPress={() =>
+              update({ autoScopeBrowser: !prefs.autoScopeBrowser })
+            }
             theme={theme}
           />
 
@@ -1231,7 +1272,9 @@ const SettingsTranslation = ({ navigation }: TranslationSettingsProps) => {
             {getString('translationScreen.glossary')}
           </List.SubHeader>
           <Text style={[styles.caption, { color: theme.onSurfaceVariant }]}>
-            {`${getString('translationScreen.glossaryCount')}: ${prefs.glossary.length}/${GLOSSARY_LIMIT}`}
+            {`${getString('translationScreen.glossaryCount')}: ${
+              prefs.glossary.length
+            }/${GLOSSARY_LIMIT}`}
           </Text>
           {prefs.glossary.map(entry => (
             <List.Item
@@ -1386,7 +1429,9 @@ const SettingsTranslation = ({ navigation }: TranslationSettingsProps) => {
             title={getString('translationScreen.budgetRequests')}
             description={
               usage
-                ? `${usage.requests} · ${getString('translationScreen.budgetToday')}: ${usage.requestsToday}`
+                ? `${usage.requests} · ${getString(
+                    'translationScreen.budgetToday',
+                  )}: ${usage.requestsToday}`
                 : '—'
             }
             theme={theme}
@@ -1407,7 +1452,9 @@ const SettingsTranslation = ({ navigation }: TranslationSettingsProps) => {
               <Text style={[styles.itemTitle, { color: theme.onSurface }]}>
                 {getString('translationScreen.budgetLimit')}
               </Text>
-              <Text style={[styles.itemDesc, { color: theme.onSurfaceVariant }]}>
+              <Text
+                style={[styles.itemDesc, { color: theme.onSurfaceVariant }]}
+              >
                 {(prefs.aiDailyRequestLimit ?? 0) <= 0
                   ? getString('translationScreen.budgetLimitOff')
                   : `${prefs.aiDailyRequestLimit}`}
@@ -1435,9 +1482,7 @@ const SettingsTranslation = ({ navigation }: TranslationSettingsProps) => {
                   ),
                 })
               }
-              disabled={
-                (prefs.aiDailyRequestLimit ?? 0) >= BUDGET_LIMIT_MAX
-              }
+              disabled={(prefs.aiDailyRequestLimit ?? 0) >= BUDGET_LIMIT_MAX}
             />
           </View>
           <List.Item
@@ -1556,19 +1601,21 @@ const SettingsTranslation = ({ navigation }: TranslationSettingsProps) => {
             {getString('translationScreen.importDetected')}
           </Text>
           <Text style={[styles.input, { color: theme.onSurface }]}>
-            {importedCredential ? importedKindLabel(importedCredential.kind) : ''}
+            {importedCredential
+              ? importedKindLabel(importedCredential.kind)
+              : ''}
           </Text>
           <Text style={[styles.label, { color: theme.onSurfaceVariant }]}>
             {getString('translationScreen.importExpected')}
           </Text>
           <Text style={[styles.input, { color: theme.onSurface }]}>
             {importedCredential?.suggestedKind
-              ? (AI_PROVIDER_KINDS.find(
+              ? AI_PROVIDER_KINDS.find(
                   kind => kind.id === importedCredential.suggestedKind,
-                )?.title ?? '')
+                )?.title ?? ''
               : editorProvider
-                ? providerKindTitle(editorProvider)
-                : ''}
+              ? providerKindTitle(editorProvider)
+              : ''}
           </Text>
           <Text style={[styles.label, { color: theme.onSurfaceVariant }]}>
             {getString('translationScreen.importMasked')}

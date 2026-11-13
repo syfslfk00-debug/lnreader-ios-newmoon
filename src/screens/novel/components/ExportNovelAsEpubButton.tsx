@@ -1,3 +1,4 @@
+import { isPickerCancellation } from '@utils/fileErrors';
 import React, { useMemo } from 'react';
 import { Portal } from 'react-native-paper';
 import { StatusBar } from 'react-native';
@@ -171,6 +172,7 @@ const ExportNovelAsEpubButton: React.FC<ExportNovelAsEpubButtonProps> = ({
         },
       });
     } catch (error) {
+      if (isPickerCancellation(error)) return;
       showToast(
         getString('novelScreen.epub.exportFailed', {
           error: error instanceof Error ? error.message : String(error),

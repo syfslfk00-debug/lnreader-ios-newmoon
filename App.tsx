@@ -1,4 +1,6 @@
 import 'react-native-url-polyfill/auto';
+import NativeFile from '@modules/native-file';
+import IOSWebViewFixtures from './src/testing/IOSWebViewFixtures';
 import { enableFreeze } from 'react-native-screens';
 import { PropsWithChildren, Suspense, useEffect, useMemo } from 'react';
 import { StatusBar, StyleSheet } from 'react-native';
@@ -98,7 +100,11 @@ const Application = () => {
             <ThemedPaperProvider>
               <BottomSheetModalProvider>
                 <StatusBar translucent={true} backgroundColor="transparent" />
-                <Main />
+                {NativeFile.E2ESurface ? (
+                  <IOSWebViewFixtures mode={NativeFile.E2ESurface} />
+                ) : (
+                  <Main />
+                )}
                 <ToastHost />
               </BottomSheetModalProvider>
             </ThemedPaperProvider>

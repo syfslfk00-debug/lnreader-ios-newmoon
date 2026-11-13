@@ -58,6 +58,7 @@ export {
   describeAIPlan,
   estimateTokens,
   planAIParts,
+  limitsForProvider,
   type AIPlan,
   type AIPlanLimits,
 } from './aiPolicy';

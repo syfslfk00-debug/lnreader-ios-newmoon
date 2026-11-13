@@ -19,7 +19,12 @@ import {
   type TranslationPreferences,
   type TranslationSegment,
 } from '../types';
-import { InMemoryMemoryDriver, flushAsync, makeFakeTranslate, waitUntil } from './helpers';
+import {
+  InMemoryMemoryDriver,
+  flushAsync,
+  makeFakeTranslate,
+  waitUntil,
+} from './helpers';
 
 jest.mock('react-native-mmkv', () => ({
   createMMKV: () => ({
@@ -32,7 +37,9 @@ jest.mock('react-native-mmkv', () => ({
 const SCOPE = { novelId: 'novel-1', chapterId: 'chapter-1' };
 const PREFIX = 'مُترجم: ';
 
-const makePrefs = (engine: TranslationPreferences['engine'] = 'googleWeb'): TranslationPreferences => ({
+const makePrefs = (
+  engine: TranslationPreferences['engine'] = 'googleWeb',
+): TranslationPreferences => ({
   ...DEFAULT_TRANSLATION_PREFERENCES,
   engine,
   target: 'ar',
@@ -48,7 +55,9 @@ interface Harness {
 }
 
 const buildHarness = (
-  translate: jest.MockedFunction<typeof translateSegments> = makeFakeTranslate(PREFIX),
+  translate: jest.MockedFunction<typeof translateSegments> = makeFakeTranslate(
+    PREFIX,
+  ),
   engine: TranslationPreferences['engine'] = 'googleWeb',
   driver: InMemoryMemoryDriver = new InMemoryMemoryDriver(),
 ): Harness => {
@@ -94,7 +103,11 @@ beforeEach(() => {
 describe('ReaderTranslationCoordinator', () => {
   it('applies visible (tier 0) segments before background ones', async () => {
     const { coordinator, applied, progress } = buildHarness();
-    const far = [segment('فقرة بعيدة أ', 2), segment('فقرة بعيدة ب', 2), segment('فقرة بعيدة ج', 2)];
+    const far = [
+      segment('فقرة بعيدة أ', 2),
+      segment('فقرة بعيدة ب', 2),
+      segment('فقرة بعيدة ج', 2),
+    ];
     const near = [segment('فقرة قريبة', 1)];
     const visible = [
       segment('ظاهر أ', 0),
@@ -106,7 +119,11 @@ describe('ReaderTranslationCoordinator', () => {
     // Queue order deliberately reversed: background first, visible last.
     coordinator.addSegments([...far, ...near, ...visible], SCOPE);
 
-    expect(progress[0]).toMatchObject({ status: 'running', total: 8, completed: 0 });
+    expect(progress[0]).toMatchObject({
+      status: 'running',
+      total: 8,
+      completed: 0,
+    });
     expect(await flushUntil(coordinator, 'completed')).toBe(true);
 
     // Two rounds: one visible batch, then one background batch.
@@ -118,13 +135,22 @@ describe('ReaderTranslationCoordinator', () => {
       [...near, ...far].map(row => row.id), // tier 1 before tier 2
     );
     expect(applied[1].every(item => backgroundIds.has(item.id))).toBe(true);
-    expect(applied.flat().every(item => item.text.startsWith(PREFIX))).toBe(true);
-    expect(progress[progress.length - 1]).toMatchObject({ status: 'completed', completed: 8 });
+    expect(applied.flat().every(item => item.text.startsWith(PREFIX))).toBe(
+      true,
+    );
+    expect(progress[progress.length - 1]).toMatchObject({
+      status: 'completed',
+      completed: 8,
+    });
   });
 
   it('never mixes tiers inside a visible round', async () => {
     const { coordinator, applied } = buildHarness();
-    const visible = [segment('ظاهر أ', 0), segment('ظاهر ب', 0), segment('ظاهر ج', 0)];
+    const visible = [
+      segment('ظاهر أ', 0),
+      segment('ظاهر ب', 0),
+      segment('ظاهر ج', 0),
+    ];
     const near = [segment('قريب أ', 1), segment('قريب ب', 1)];
 
     coordinator.addSegments([...near, ...visible], SCOPE);
@@ -144,21 +170,35 @@ describe('ReaderTranslationCoordinator', () => {
   it('reuses prefilled memory and skips the translate call on a second identical run', async () => {
     const first = buildHarness();
     const texts = ['الفقرة الأولى', 'الفقرة الثانية', 'الفقرة الثالثة'];
-    first.coordinator.addSegments(texts.map(text => segment(text)), SCOPE);
+    first.coordinator.addSegments(
+      texts.map(text => segment(text)),
+      SCOPE,
+    );
     expect(await flushUntil(first.coordinator, 'completed')).toBe(true);
     expect(first.translate).toHaveBeenCalledTimes(1);
 
     // Second coordinator, same namespace inputs, same disk, cold session.
     const secondTranslate = makeFakeTranslate(PREFIX);
     const second = buildHarness(secondTranslate, 'googleWeb', first.driver);
-    second.coordinator.addSegments(texts.map(text => segment(text)), SCOPE);
+    second.coordinator.addSegments(
+      texts.map(text => segment(text)),
+      SCOPE,
+    );
     expect(await flushUntil(second.coordinator, 'completed')).toBe(true);
 
     expect(secondTranslate).not.toHaveBeenCalled();
     expect(second.applied.flat()).toHaveLength(texts.length);
     // Cached results carry the first run's translations.
-    expect(second.applied.flat().map(item => item.text).sort()).toEqual(
-      first.applied.flat().map(item => item.text).sort(),
+    expect(
+      second.applied
+        .flat()
+        .map(item => item.text)
+        .sort(),
+    ).toEqual(
+      first.applied
+        .flat()
+        .map(item => item.text)
+        .sort(),
     );
     expect(second.progress[second.progress.length - 1]).toMatchObject({
       status: 'completed',
@@ -190,14 +230,21 @@ describe('ReaderTranslationCoordinator', () => {
     // retries ONLY the missing part (no re-billing for saved part 1).
     let attempts = 0;
     const flaky = jest.fn(
-      async (input: TranslationSegment[]): Promise<TranslationSegment[]> => {
+      async (
+        input: TranslationSegment[],
+        context: Parameters<typeof translateSegments>[1],
+      ): Promise<TranslationSegment[]> => {
+        context.onRequest?.();
         attempts += 1;
         if (attempts === 2) throw new TranslationFailure('فشل');
         return input.map(row => ({ id: row.id, text: `${PREFIX}${row.text}` }));
       },
     ) as unknown as jest.MockedFunction<typeof translateSegments>;
 
-    const { coordinator, applied, progress, translate } = buildHarness(flaky, 'ai');
+    const { coordinator, applied, progress, translate } = buildHarness(
+      flaky,
+      'ai',
+    );
     const longText = 'نص طويل للفصل. '.repeat(8); // 120 chars
     const segments = Array.from({ length: 300 }, (_, index) =>
       segment(`${longText}#${index}`, 2),
@@ -210,7 +257,9 @@ describe('ReaderTranslationCoordinator', () => {
     // Part 1 was applied and saved before the failure; the request counter
     // reflects only the requests actually spent.
     expect(applied.flat()).toHaveLength(150);
-    expect(applied.flat().every(item => item.text.startsWith(PREFIX))).toBe(true);
+    expect(applied.flat().every(item => item.text.startsWith(PREFIX))).toBe(
+      true,
+    );
     expect(progress[progress.length - 1]?.requests).toBe(2);
     // Two translate calls so far: part 1 + failed part 2.
     expect(translate).toHaveBeenCalledTimes(2);
@@ -218,7 +267,10 @@ describe('ReaderTranslationCoordinator', () => {
     coordinator.resume();
     expect(await flushUntil(coordinator, 'completed')).toBe(true);
     expect(coordinator.status).toBe('completed');
-    expect(progress[progress.length - 1]).toMatchObject({ error: null, completed: 300 });
+    expect(progress[progress.length - 1]).toMatchObject({
+      error: null,
+      completed: 300,
+    });
     // Retry covered ONLY part 2 — part 1 was never re-sent.
     expect(applied.flat()).toHaveLength(300);
     expect(attempts).toBe(3);
@@ -263,8 +315,12 @@ describe('ReaderTranslationCoordinator', () => {
 
     // Both occurrences are applied with the same translation.
     expect(applied.flat()).toHaveLength(3);
-    const appliedForDupes = applied.flat().filter(item => dupes.some(row => row.id === item.id));
-    expect(appliedForDupes.map(item => item.id).sort()).toEqual(dupes.map(row => row.id).sort());
+    const appliedForDupes = applied
+      .flat()
+      .filter(item => dupes.some(row => row.id === item.id));
+    expect(appliedForDupes.map(item => item.id).sort()).toEqual(
+      dupes.map(row => row.id).sort(),
+    );
     expect(new Set(appliedForDupes.map(item => item.text))).toEqual(
       new Set([`${PREFIX}${repeated}`]),
     );

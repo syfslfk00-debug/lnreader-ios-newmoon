@@ -13,6 +13,7 @@ on:
     branches:
       - ios-port
       - fix/ios-rtl-newmoon-reader-port
+      - fix/v3-reader-translation-ios
     paths-ignore:
       - 'docs/**'
       - '**.md'
@@ -28,6 +29,7 @@ permissions:
 env:
   CI: 'true'
   EXPO_NO_TELEMETRY: '1'
+  GOOGLE_IOS_CLIENT_ID: ${{ vars.GOOGLE_IOS_CLIENT_ID }}
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -58,6 +60,9 @@ jobs:
 
       - name: Lint
         run: pnpm run lint
+
+      - name: Check reader formatter
+        run: pnpm run check:reader-formatter
 
       - name: Type-check
         run: pnpm run type-check
@@ -267,3 +272,8 @@ jobs:
             ios/pod-install.log
             xcodebuild-device.log
           retention-days: 30
+
+  simulator-verification:
+    name: Verify the same commit on iOS Simulator
+    needs: build-ipa
+    uses: ./.github/workflows/ios-simulator-test.yml

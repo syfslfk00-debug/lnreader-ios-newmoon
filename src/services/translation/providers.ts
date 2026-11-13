@@ -1,7 +1,4 @@
-import {
-  type AIChoice,
-  type AIProviderConfiguration,
-} from './providerTypes';
+import { type AIChoice, type AIProviderConfiguration } from './providerTypes';
 import { TranslationFailure } from './types';
 import {
   httpObject,
@@ -12,7 +9,11 @@ import {
   validateStatus,
   type TransportResponse,
 } from './transport';
-import { recordAIRequest, recordAIRequestFailed } from './usage';
+import {
+  recordAIRequest,
+  recordAIRequestFailed,
+  recordAIRequestStarted,
+} from './usage';
 
 // Port of Zeus Ascent Edition: ZEUSNext/AIProviderService.swift.
 // Provider discovery + generation for four kinds. Private account protocols
@@ -38,28 +39,53 @@ const discoverOpenAICompatible = async (
   secret: string,
 ): Promise<AIChoice[]> => {
   const url = validateEndpoint(config.baseURL, 'models');
-  const value = (await httpObject(url.toString(), { headers: bearer(secret) })) as {
+  const value = (await httpObject(url.toString(), {
+    headers: bearer(secret),
+  })) as {
     data?: { id?: unknown; name?: unknown }[];
   };
   return ((value?.data as { id?: unknown; name?: unknown }[]) ?? [])
     .filter(row => typeof row?.id === 'string')
-    .map(row => ({ id: row.id as string, name: typeof row.name === 'string' ? row.name : (row.id as string) }))
+    .map(row => ({
+      id: row.id as string,
+      name: typeof row.name === 'string' ? row.name : (row.id as string),
+    }))
     .sort((a, b) => (a.name < b.name ? -1 : 1));
 };
 
 // ---- Gemini API (official) --------------------------------------------------
 
 const discoverGeminiAPI = async (secret: string): Promise<AIChoice[]> => {
+  if (!secret.trim()) {
+    throw new TranslationFailure('أدخل مفتاح Gemini API أولًا.');
+  }
   const models: AIChoice[] = [];
   let page: string | null = null;
+  const seenPages = new Set<string>();
   do {
-    const url = new URL('https://generativelanguage.googleapis.com/v1beta/models');
+    const url = new URL(
+      'https://generativelanguage.googleapis.com/v1beta/models',
+    );
     url.searchParams.set('pageSize', '100');
-    if (page) url.searchParams.set('pageToken', page);
+    if (page) {
+      if (seenPages.has(page)) {
+        throw new TranslationFailure(
+          'أعاد Gemini رمز صفحة مكررًا. أعد اكتشاف النماذج.',
+        );
+      }
+      seenPages.add(page);
+      url.searchParams.set('pageToken', page);
+    }
     const value = (await httpObject(url.toString(), {
       headers: { 'x-goog-api-key': secret },
     })) as {
-      models?: { name?: unknown; displayName?: unknown; supportedGenerationMethods?: unknown }[];
+      models?: {
+        name?: unknown;
+        displayName?: unknown;
+        supportedGenerationMethods?: unknown;
+        inputTokenLimit?: number;
+        outputTokenLimit?: number;
+      }[];
       nextPageToken?: unknown;
     };
     for (const model of value?.models ?? []) {
@@ -69,12 +95,16 @@ const discoverGeminiAPI = async (secret: string): Promise<AIChoice[]> => {
         : [];
       if (name && methods.includes('generateContent')) {
         models.push({
-          id: name.replace(/models\//g, ''),
-          name: typeof model.displayName === 'string' ? model.displayName : name,
+          id: name.replace(/^models\//, ''),
+          inputTokenLimit: model.inputTokenLimit,
+          outputTokenLimit: model.outputTokenLimit,
+          name:
+            typeof model.displayName === 'string' ? model.displayName : name,
         });
       }
     }
-    page = typeof value?.nextPageToken === 'string' ? value.nextPageToken : null;
+    page =
+      typeof value?.nextPageToken === 'string' ? value.nextPageToken : null;
   } while (page !== null && models.length < 500);
   return models;
 };
@@ -83,6 +113,7 @@ const generateGeminiAPI = async (
   prompt: string,
   config: AIProviderConfiguration,
   secret: string,
+  options?: GenerateOptions,
 ): Promise<string> => {
   if (!/^[A-Za-z0-9._-]+$/.test(config.model)) {
     throw new TranslationFailure('معرّف النموذج غير صالح.');
@@ -90,8 +121,11 @@ const generateGeminiAPI = async (
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.model}:generateContent`;
   const value = (await httpObject(url, {
     method: 'POST',
-    body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: prompt }] }] }),
+    body: JSON.stringify({
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    }),
     headers: { 'x-goog-api-key': secret },
+    signal: options?.signal,
   })) as {
     candidates?: { content?: { parts?: { text?: unknown }[] } }[];
   };
@@ -100,7 +134,9 @@ const generateGeminiAPI = async (
     .map(part => (typeof part?.text === 'string' ? part.text : ''))
     .join('');
   if (!result) {
-    throw new TranslationFailure('لم يُرجع Gemini نصًا؛ قد يكون المحتوى مرفوضًا أو الحد مستنفدًا.');
+    throw new TranslationFailure(
+      'لم يُرجع Gemini نصًا؛ قد يكون المحتوى مرفوضًا أو الحد مستنفدًا.',
+    );
   }
   return result;
 };
@@ -126,13 +162,17 @@ const chatGPTHeaders = (secret: string): Record<string, string> => {
   } catch {
     throw new TranslationFailure('لم يتضمن الرمز معرّف حساب ChatGPT.');
   }
-  const auth = claims['https://api.openai.com/auth'] as Record<string, unknown> | undefined;
+  const auth = claims['https://api.openai.com/auth'] as
+    | Record<string, unknown>
+    | undefined;
   const account = auth?.chatgpt_account_id;
   if (typeof account !== 'string') {
     throw new TranslationFailure('لم يتضمن الرمز معرّف حساب ChatGPT.');
   }
   if (typeof claims.exp === 'number' && claims.exp * 1000 < Date.now()) {
-    throw new TranslationFailure('انتهت صلاحية رمز ChatGPT. أدخل رمزًا جديدًا.');
+    throw new TranslationFailure(
+      'انتهت صلاحية رمز ChatGPT. أدخل رمزًا جديدًا.',
+    );
   }
   return {
     Authorization: `Bearer ${secret}`,
@@ -157,20 +197,32 @@ const atobUnicode = (base64: string): string => {
   return new TextDecoder().decode(bytes);
 };
 
-const accountGet = async (path: string, headers: Record<string, string>): Promise<unknown> =>
-  httpObject(CHATGPT_BASE + path, { headers });
+const accountGet = async (
+  path: string,
+  headers: Record<string, string>,
+): Promise<unknown> => httpObject(CHATGPT_BASE + path, { headers });
 
 const discoverChatGPT = async (
   config: AIProviderConfiguration,
   secret: string,
-): Promise<{ models: AIChoice[]; chats: AIChoice[]; projects: AIProviderConfiguration['projects']; notice: string | null }> => {
+): Promise<{
+  models: AIChoice[];
+  chats: AIChoice[];
+  projects: AIProviderConfiguration['projects'];
+  notice: string | null;
+}> => {
   const headers = chatGPTHeaders(secret);
   const modelsValue = (await accountGet('models', headers)) as {
     models?: { slug?: unknown; title?: unknown }[];
   };
-  const models = ((modelsValue?.models as { slug?: unknown; title?: unknown }[]) ?? [])
+  const models = (
+    (modelsValue?.models as { slug?: unknown; title?: unknown }[]) ?? []
+  )
     .filter(row => typeof row?.slug === 'string')
-    .map(row => ({ id: row.slug as string, name: typeof row.title === 'string' ? row.title : (row.slug as string) }));
+    .map(row => ({
+      id: row.slug as string,
+      name: typeof row.title === 'string' ? row.title : (row.slug as string),
+    }));
   if (!models.some(row => row.id === 'auto')) {
     models.unshift({ id: 'auto', name: 'اختيار الحساب التلقائي' });
   }
@@ -196,29 +248,39 @@ const discoverChatGPT = async (
       'gizmos/snorlax/sidebar?owned_only=true&conversations_per_gizmo=100&limit=100',
       headers,
     )) as { items?: unknown[] };
-    projects = ((value?.items as Record<string, unknown>[]) ?? []).flatMap(item => {
-      const wrapper = (item?.gizmo as Record<string, unknown>) ?? {};
-      const gizmo = (wrapper.gizmo as Record<string, unknown>) ?? wrapper;
-      const id = gizmo?.id;
-      if (typeof id !== 'string') return [];
-      const display = (gizmo.display as Record<string, unknown>) ?? {};
-      const conversationItems =
-        ((item?.conversations as Record<string, unknown>)?.items as { id?: unknown; title?: unknown }[]) ?? [];
-      return [
-        {
-          id,
-          name: typeof display.name === 'string' ? display.name : 'مشروع',
-          chats: conversationItems
-            .filter(row => typeof row?.id === 'string')
-            .map(row => ({
-              id: row.id as string,
-              name: typeof row.title === 'string' ? row.title : 'محادثة بلا عنوان',
-            })),
-        },
-      ];
-    });
+    projects = ((value?.items as Record<string, unknown>[]) ?? []).flatMap(
+      item => {
+        const wrapper = (item?.gizmo as Record<string, unknown>) ?? {};
+        const gizmo = (wrapper.gizmo as Record<string, unknown>) ?? wrapper;
+        const id = gizmo?.id;
+        if (typeof id !== 'string') return [];
+        const display = (gizmo.display as Record<string, unknown>) ?? {};
+        const conversationItems =
+          ((item?.conversations as Record<string, unknown>)?.items as {
+            id?: unknown;
+            title?: unknown;
+          }[]) ?? [];
+        return [
+          {
+            id,
+            name: typeof display.name === 'string' ? display.name : 'مشروع',
+            chats: conversationItems
+              .filter(row => typeof row?.id === 'string')
+              .map(row => ({
+                id: row.id as string,
+                name:
+                  typeof row.title === 'string'
+                    ? row.title
+                    : 'محادثة بلا عنوان',
+              })),
+          },
+        ];
+      },
+    );
   } catch (error) {
-    notice = `جُلبت النماذج والمحادثات؛ تعذر جلب المشاريع: ${(error as Error).message}`;
+    notice = `جُلبت النماذج والمحادثات؛ تعذر جلب المشاريع: ${
+      (error as Error).message
+    }`;
   }
   return { models, chats, projects, notice };
 };
@@ -247,20 +309,33 @@ const geminiSession = async (
   secret: string,
 ): Promise<GeminiSession> => {
   if (!secret || secret.includes('\n') || secret.includes('\r')) {
-    throw new TranslationFailure('أدخل ترويسة Cookie لحساب Google من جلسة تخصك.');
+    throw new TranslationFailure(
+      'أدخل ترويسة Cookie لحساب Google من جلسة تخصك.',
+    );
   }
   const url = `https://gemini.google.com/u/${config.googleAccountIndex}/app`;
   const response = await httpSend(url, {
-    headers: { Cookie: secret, 'User-Agent': 'Mozilla/5.0', Accept: 'text/html' },
+    headers: {
+      Cookie: secret,
+      'User-Agent': 'Mozilla/5.0',
+      Accept: 'text/html',
+    },
     accept: 'text/html',
   });
   validateStatus(response.status);
   const at = captureValue(response.text, '"SNlM0e":"[^"]+"');
   const sid = captureValue(response.text, '"FdrFJe":"[^"]+"');
   if (!at || !sid) {
-    throw new TranslationFailure('لم تكتمل مصادقة Gemini. سجّل الدخول إلى موقعه وحدّث كوكيز الحساب.');
+    throw new TranslationFailure(
+      'لم تكتمل مصادقة Gemini. سجّل الدخول إلى موقعه وحدّث كوكيز الحساب.',
+    );
   }
-  return { at, sid, build: captureValue(response.text, '"cfb2h":"[^"]+"') ?? '', cookie: secret };
+  return {
+    at,
+    sid,
+    build: captureValue(response.text, '"cfb2h":"[^"]+"') ?? '',
+    cookie: secret,
+  };
 };
 
 const geminiRPC = async (
@@ -306,7 +381,9 @@ const discoverGeminiAccount = async (
   if (body) {
     const code = (nested(body, [14]) as number) ?? 1000;
     if (code !== 1000) {
-      throw new TranslationFailure(`حساب Gemini غير جاهز (${code}). أكمل تسجيل الدخول وشروط الخدمة في موقعه.`);
+      throw new TranslationFailure(
+        `حساب Gemini غير جاهز (${code}). أكمل تسجيل الدخول وشروط الخدمة في موقعه.`,
+      );
     }
     const tiers = (nested(body, [16]) as number[]) ?? [];
     const flags = (nested(body, [17]) as number[]) ?? [];
@@ -314,26 +391,43 @@ const discoverGeminiAccount = async (
     const capacity = tiers.includes(22)
       ? 2
       : tiers.includes(21)
-        ? 1
-        : flags.includes(115)
-          ? 4
-          : tiers.includes(16) || flags.includes(106)
-            ? 3
-            : tiers.includes(8) || flags.includes(19)
-              ? 2
-              : 1;
+      ? 1
+      : flags.includes(115)
+      ? 4
+      : tiers.includes(16) || flags.includes(106)
+      ? 3
+      : tiers.includes(8) || flags.includes(19)
+      ? 2
+      : 1;
     const rows = (nested(body, [15]) as unknown[][]) ?? [];
     for (const row of rows) {
       const id = row.length > 0 && typeof row[0] === 'string' ? row[0] : null;
       if (!id) continue;
       const name =
-        (nested(row, [11]) as string) ?? (nested(row, [19]) as string) ?? ((row[1] as string) ?? id);
-      const header: unknown[] = [1, null, null, null, id, null, null, 0, [4, 5, 6, 8], null, null];
+        (nested(row, [11]) as string) ??
+        (nested(row, [19]) as string) ??
+        (row[1] as string) ??
+        id;
+      const header: unknown[] = [
+        1,
+        null,
+        null,
+        null,
+        id,
+        null,
+        null,
+        0,
+        [4, 5, 6, 8],
+        null,
+        null,
+      ];
       while (header.length <= field) header.push(null);
       header[field] = capacity;
       header.push(null);
       header.push(null);
-      header.push((nested(row, [17]) as number) ?? (nested(row, [9]) as number) ?? 1);
+      header.push(
+        (nested(row, [17]) as number) ?? (nested(row, [9]) as number) ?? 1,
+      );
       models.push({ id, name, metadata: JSON.stringify(header) });
     }
   }
@@ -349,7 +443,9 @@ const discoverGeminiAccount = async (
       for (const row of rows) {
         const id = row.length > 0 && typeof row[0] === 'string' ? row[0] : null;
         const name = nested(row, [1]) as string | null;
-        if (id && name && !chats.some(chat => chat.id === id)) chats.push({ id, name });
+        if (id && name && !chats.some(chat => chat.id === id)) {
+          chats.push({ id, name });
+        }
       }
     }
   }
@@ -362,8 +458,32 @@ const generateGeminiAccount = async (
   secret: string,
 ): Promise<string> => {
   const session = await geminiSession(config, secret);
-  const history: unknown[] = [null, null, null, null, null, null, null, null, null, null];
-  const content: unknown[] = [[prompt, 0, null, [], null, null, 0], ['ar'], history, null, null, null, [], 0, [], [], 1, 0];
+  const history: unknown[] = [
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+  ];
+  const content: unknown[] = [
+    [prompt, 0, null, [], null, null, 0],
+    ['ar'],
+    history,
+    null,
+    null,
+    null,
+    [],
+    0,
+    [],
+    [],
+    1,
+    0,
+  ];
   const url = new URL(
     `https://gemini.google.com/u/${config.googleAccountIndex}/_/BardChatUi/data/assistant.lamda.BardFrontendService/StreamGenerate`,
   );
@@ -371,7 +491,10 @@ const generateGeminiAccount = async (
   url.searchParams.set('hl', 'ar');
   url.searchParams.set('f.sid', session.sid);
   url.searchParams.set('rt', 'c');
-  url.searchParams.set('_reqid', String(Math.floor(10000 + Math.random() * 90000)));
+  url.searchParams.set(
+    '_reqid',
+    String(Math.floor(10000 + Math.random() * 90000)),
+  );
   const headers: Record<string, string> = {
     Cookie: session.cookie,
     Origin: 'https://gemini.google.com',
@@ -382,7 +505,9 @@ const generateGeminiAccount = async (
   if (chosen?.metadata) headers['x-goog-ext-525001261-jspb'] = chosen.metadata;
   const response = await httpSend(url.toString(), {
     method: 'POST',
-    body: `at=${encodeURIComponent(session.at)}&f.req=${encodeURIComponent(JSON.stringify([null, JSON.stringify(content)]))}`,
+    body: `at=${encodeURIComponent(session.at)}&f.req=${encodeURIComponent(
+      JSON.stringify([null, JSON.stringify(content)]),
+    )}`,
     headers,
     contentType: 'application/x-www-form-urlencoded;charset=utf-8',
   });
@@ -401,7 +526,9 @@ const generateGeminiAccount = async (
     }
   }
   if (!result) {
-    throw new TranslationFailure('لم يُرجع Gemini نصًا. أعد اختبار الاتصال؛ بروتوكول الويب قد يتغير.');
+    throw new TranslationFailure(
+      'لم يُرجع Gemini نصًا. أعد اختبار الاتصال؛ بروتوكول الويب قد يتغير.',
+    );
   }
   return result;
 };
@@ -436,7 +563,10 @@ const generateChatGPTAccount = async (
   if (config.conversationID) body.conversation_id = config.conversationID;
   if (config.projectID) {
     (message.metadata as Record<string, unknown>).gizmo_id = config.projectID;
-    body.conversation_mode = { kind: 'gizmo_interaction', gizmo_id: config.projectID };
+    body.conversation_mode = {
+      kind: 'gizmo_interaction',
+      gizmo_id: config.projectID,
+    };
     body.conversation_origin = 'tpp';
   }
   const response = await httpSend(CHATGPT_BASE + 'conversation', {
@@ -457,14 +587,20 @@ const generateChatGPTAccount = async (
       continue;
     }
     if (event.error) {
-      throw new TranslationFailure('أعاد ChatGPT خطأ أثناء التوليد. تحقق من الجلسة وحد الاستخدام.');
+      throw new TranslationFailure(
+        'أعاد ChatGPT خطأ أثناء التوليد. تحقق من الجلسة وحد الاستخدام.',
+      );
     }
     const msg = event.message as Record<string, unknown> | undefined;
     const author = msg?.author as Record<string, unknown> | undefined;
     if (author?.role === 'assistant') {
       const content = msg?.content as Record<string, unknown> | undefined;
-      const parts = Array.isArray(content?.parts) ? (content.parts as unknown[]) : [];
-      const text = parts.filter((p): p is string => typeof p === 'string').join('');
+      const parts = Array.isArray(content?.parts)
+        ? (content.parts as unknown[])
+        : [];
+      const text = parts
+        .filter((p): p is string => typeof p === 'string')
+        .join('');
       if (text) answer = text;
     }
   }
@@ -482,6 +618,8 @@ export interface GenerateOptions {
   // v3 instant translation: stream the OpenAI-compatible response and emit
   // every completed {id,text} object as soon as it closes in the JSON array.
   stream?: boolean;
+  signal?: AbortSignal;
+  onRequest?: () => void;
   onPartialItem?: (item: { id: string; text: string }) => void;
 }
 
@@ -497,20 +635,31 @@ const consumeSSEBuffer = (
     if (!trimmed.startsWith('data:')) continue;
     const payload = trimmed.slice(5).trim();
     if (payload.length === 0 || payload === '[DONE]') continue;
+    let value;
     try {
-      const value = JSON.parse(payload);
-      const delta = value?.choices?.[0]?.delta?.content;
-      if (typeof delta === 'string' && delta.length > 0) onDelta(delta);
+      value = JSON.parse(payload);
     } catch {
-      // Malformed chunk: skip; final validation remains authoritative.
+      continue;
     }
+    if (value?.error) {
+      throw new TranslationFailure(
+        'أوقف المزود البث قبل اكتمال الترجمة. تحقق من الحصة أو النموذج.',
+      );
+    }
+    const delta =
+      value?.choices?.[0]?.delta?.content ??
+      value?.candidates?.[0]?.content?.parts
+        ?.filter((part: { thought?: boolean }) => !part.thought)
+        .map((part: { text?: string }) => part.text ?? '')
+        .join('');
+    if (typeof delta === 'string' && delta.length > 0) onDelta(delta);
   }
   return rest;
 };
 
 // Scan `full` from `start` for complete top-level {"id":...,"text":...}
 // objects (brace-balanced, string-aware). Returns the index to resume from.
-const extractCompleteItems = (
+export const extractTranslationProgress = (
   full: string,
   start: number,
   emit: (item: { id: string; text: string }) => void,
@@ -519,43 +668,50 @@ const extractCompleteItems = (
   while (index < full.length) {
     const open = full.indexOf('{', index);
     if (open === -1) return index;
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    let close = -1;
-    for (let cursor = open; cursor < full.length; cursor += 1) {
-      const character = full[cursor];
+    let depth = 0,
+      inString = false,
+      escaped = false,
+      close = -1;
+    for (let cursor = open; cursor < full.length; cursor++) {
+      const c = full[cursor];
       if (inString) {
         if (escaped) escaped = false;
-        else if (character === '\\') escaped = true;
-        else if (character === '"') inString = false;
-      } else if (character === '"') {inString = true;}
-      else if (character === "{") {
-        depth += 1;
+        else if (c === '\\') escaped = true;
+        else if (c === '"') inString = false;
+      } else if (c === '"') {
+        inString = true;
+      } else if (c === '{') {
+        depth++;
+      } else if (c === '}' && --depth === 0) {
+        close = cursor;
+        break;
       }
-      else if (character === '}') {
-        depth -= 1;
-        if (depth === 0) {
-          close = cursor;
-          break;
+    }
+    const raw = full.slice(open, close < 0 ? undefined : close + 1);
+    if (close >= 0) {
+      try {
+        const item = JSON.parse(raw);
+        if (typeof item.id === 'string' && typeof item.text === 'string') {
+          emit(item);
+        }
+      } catch {
+        /* final validation reports malformed JSON */
+      }
+      index = close + 1;
+    } else {
+      // Only display decoded string data, never executable provider markup.
+      const id = raw.match(/"id"\s*:\s*("(?:\\.|[^"\\])*")/);
+      const text = raw.match(/"text"\s*:\s*"((?:\\.|[^"\\])*)/);
+      if (id && text) {
+        const prefix = text[1].replace(/\\(?:u[0-9a-fA-F]{0,3})?$/, '');
+        try {
+          emit({ id: JSON.parse(id[1]), text: JSON.parse('"' + prefix + '"') });
+        } catch {
+          /* wait for a complete escape sequence */
         }
       }
+      return open;
     }
-    if (close === -1) return open; // object still streaming
-    try {
-      const value = JSON.parse(full.slice(open, close + 1));
-      if (
-        value &&
-        typeof value.id === 'string' &&
-        typeof value.text === 'string' &&
-        value.text.length > 0
-      ) {
-        emit(value);
-      }
-    } catch {
-      // Incomplete/invalid JSON object: the final validation decides.
-    }
-    index = close + 1;
   }
   return index;
 };
@@ -567,6 +723,7 @@ const xhrStreamPost = (
   headers: Record<string, string>,
   body: string,
   onChunk: (chunk: string) => void,
+  signal?: AbortSignal,
 ): Promise<{ status: number; text: string }> =>
   new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
@@ -580,18 +737,56 @@ const xhrStreamPost = (
       }
     }
     let consumed = 0;
-    xhr.onprogress = () => {
-      const total = xhr.responseText.length;
-      if (total > consumed) {
-        onChunk(xhr.responseText.slice(consumed));
-        consumed = total;
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', abort);
+      if (error) reject(error);
+      else resolve({ status: xhr.status, text: xhr.responseText ?? '' });
+    };
+    const abort = () => {
+      xhr.abort();
+      finish(new TranslationFailure('أُلغي طلب الترجمة.'));
+    };
+    const flush = () => {
+      if (settled) return;
+      try {
+        if (xhr.status < 200 || xhr.status >= 300) return;
+        if (
+          xhr.responseURL &&
+          new URL(xhr.responseURL).origin !== new URL(url).origin
+        ) {
+          throw new TranslationFailure('أعاد المزود توجيهًا غير متوقع.');
+        }
+        const text = xhr.responseText ?? '';
+        if (text.length > 8_000_000) {
+          throw new TranslationFailure('رد المزود أكبر من الحد المسموح.');
+        }
+        if (text.length > consumed) {
+          onChunk(text.slice(consumed));
+          consumed = text.length;
+        }
+      } catch (error) {
+        finish(error as Error);
+        xhr.abort();
       }
     };
-    xhr.onload = () =>
-      resolve({ status: xhr.status, text: typeof xhr.response === 'string' ? xhr.response : '' });
-    xhr.onerror = () => reject(new TranslationFailure('تعذر الاتصال بالمزود (بث تدريجي).'));
+    xhr.onprogress = flush;
+    xhr.onload = () => {
+      flush();
+      finish();
+    };
+    xhr.onerror = () =>
+      finish(new TranslationFailure('تعذر الاتصال بالمزود (بث تدريجي).'));
     xhr.ontimeout = () =>
-      reject(new TranslationFailure('انتهت مهلة البث التدريجي من المزود.'));
+      finish(new TranslationFailure('انتهت مهلة البث التدريجي من المزود.'));
+    xhr.onabort = () => finish(new TranslationFailure('أُلغي طلب الترجمة.'));
+    signal?.addEventListener('abort', abort, { once: true });
+    if (signal?.aborted) {
+      abort();
+      return;
+    }
     xhr.send(body);
   });
 
@@ -601,7 +796,14 @@ const generateStreamOpenAICompatible = async (
   secret: string,
   options: GenerateOptions,
 ): Promise<string> => {
-  const url = validateEndpoint(config.baseURL, 'chat/completions');
+  const gemini = config.kind === 'geminiAPI';
+  const url = gemini
+    ? new URL(
+        `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(
+          config.model,
+        )}:streamGenerateContent?alt=sse`,
+      )
+    : validateEndpoint(config.baseURL, 'chat/completions');
   let full = '';
   let buffer = '';
   let scan = 0;
@@ -609,19 +811,31 @@ const generateStreamOpenAICompatible = async (
     buffer = consumeSSEBuffer(buffer + chunk, delta => {
       full += delta;
     });
-    scan = extractCompleteItems(full, scan, item => options.onPartialItem?.(item));
+    scan = extractTranslationProgress(full, scan, item =>
+      options.onPartialItem?.(item),
+    );
   };
   const result = await xhrStreamPost(
     url.toString(),
-    { 'Content-Type': 'application/json', ...bearer(secret) },
-    JSON.stringify({
-      model: config.model,
-      messages: [{ role: 'user', content: prompt }],
-      stream: true,
-    }),
+    {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+      ...(gemini ? { 'x-goog-api-key': secret } : bearer(secret)),
+    },
+    JSON.stringify(
+      gemini
+        ? { contents: [{ role: 'user', parts: [{ text: prompt }] }] }
+        : {
+            model: config.model,
+            messages: [{ role: 'user', content: prompt }],
+            stream: true,
+          },
+    ),
     flush,
+    options.signal,
   );
   validateStatus(result.status);
+  flush('\n');
   // Fallback: server ignored stream:true and answered plain JSON.
   if (full.length === 0) {
     try {
@@ -635,7 +849,7 @@ const generateStreamOpenAICompatible = async (
   if (full.length === 0) {
     throw new TranslationFailure('لم يُرجع المزود نصًا من البث التدريجي.');
   }
-  extractCompleteItems(full, scan, item => options.onPartialItem?.(item));
+  extractTranslationProgress(full, scan, item => options.onPartialItem?.(item));
   return full;
 };
 
@@ -686,8 +900,21 @@ export const generateWithProvider = async (
   options?: GenerateOptions,
 ): Promise<string> => {
   if (!config.model) {
-    throw new TranslationFailure('اختر نموذجًا بعد اختبار اتصال المزود في الإعدادات.');
+    throw new TranslationFailure(
+      'اختر نموذجًا بعد اختبار اتصال المزود في الإعدادات.',
+    );
   }
+  if (options?.signal?.aborted) {
+    throw new TranslationFailure('أُلغي طلب الترجمة.');
+  }
+  if (config.kind === 'openAICompatible') {
+    validateEndpoint(config.baseURL, 'chat/completions');
+  }
+  if (config.kind === 'geminiAPI' && !/^[A-Za-z0-9._-]+$/.test(config.model)) {
+    throw new TranslationFailure('معرّف النموذج غير صالح.');
+  }
+  options?.onRequest?.();
+  recordAIRequestStarted();
   try {
     const text = await dispatchGenerate(prompt, config, secret, options);
     return text;
@@ -706,7 +933,12 @@ const dispatchGenerate = async (
   switch (config.kind) {
     case 'openAICompatible': {
       if (options?.stream) {
-        const text = await generateStreamOpenAICompatible(prompt, config, secret, options);
+        const text = await generateStreamOpenAICompatible(
+          prompt,
+          config,
+          secret,
+          options,
+        );
         recordAIRequest(prompt.length, text.length, null);
         return text;
       }
@@ -719,13 +951,16 @@ const dispatchGenerate = async (
           stream: false,
         }),
         headers: bearer(secret),
+        signal: options?.signal,
       })) as {
         choices?: { message?: { content?: unknown } }[];
         usage?: { prompt_tokens?: number; completion_tokens?: number };
       };
       const text = value?.choices?.[0]?.message?.content;
       if (typeof text !== 'string' || text.length === 0) {
-        throw new TranslationFailure('لم يُرجع المزود نصًا من chat/completions.');
+        throw new TranslationFailure(
+          'لم يُرجع المزود نصًا من chat/completions.',
+        );
       }
       recordAIRequest(prompt.length, text.length, {
         promptTokens: value?.usage?.prompt_tokens,
@@ -733,8 +968,13 @@ const dispatchGenerate = async (
       });
       return text;
     }
-    case 'geminiAPI':
-      return generateGeminiAPI(prompt, config, secret);
+    case 'geminiAPI': {
+      const text = options?.stream
+        ? await generateStreamOpenAICompatible(prompt, config, secret, options)
+        : await generateGeminiAPI(prompt, config, secret, options);
+      recordAIRequest(prompt.length, text.length, null);
+      return text;
+    }
     case 'chatGPTAccount':
       return generateChatGPTAccount(prompt, config, secret);
     case 'geminiAccount':

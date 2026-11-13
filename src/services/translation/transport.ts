@@ -17,7 +17,9 @@ const LOCAL_HOSTS = ['localhost', '127.0.0.1', '::1'];
 // no query, no fragment. Path is appended for API-relative endpoints.
 export const validateEndpoint = (base: string, path = ''): URL => {
   const fail = () =>
-    new TranslationFailure('أدخل عنوان HTTPS صالحًا للمزود. HTTP متاح للخادم المحلي فقط.');
+    new TranslationFailure(
+      'أدخل عنوان HTTPS صالحًا للمزود. HTTP متاح للخادم المحلي فقط.',
+    );
   let url: URL;
   try {
     url = new URL(base.trim());
@@ -31,12 +33,17 @@ export const validateEndpoint = (base: string, path = ''): URL => {
     url.password ||
     url.search ||
     url.hash ||
-    !(url.protocol === 'https:' || (url.protocol === 'http:' && LOCAL_HOSTS.includes(host)))
+    !(
+      url.protocol === 'https:' ||
+      (url.protocol === 'http:' && LOCAL_HOSTS.includes(host))
+    )
   ) {
     throw fail();
   }
   if (path.length > 0) {
-    const left = url.pathname.endsWith('/') ? url.pathname.slice(0, -1) : url.pathname;
+    const left = url.pathname.endsWith('/')
+      ? url.pathname.slice(0, -1)
+      : url.pathname;
     const right = path.startsWith('/') ? path : `/${path}`;
     return new URL(url.origin + left + right);
   }
@@ -53,14 +60,21 @@ export interface TransportResponse {
 // AIHTTP.validate — Arabic status messages verbatim.
 export const validateStatus = (status: number): void => {
   if (status >= 200 && status < 300) return;
-  if (status === 401)
-    {throw new TranslationFailure('انتهت الجلسة أو مفتاح المزود غير صحيح. حدّث بيانات الاتصال.');}
-  if (status === 403)
-    {throw new TranslationFailure(
+  if (status === 401) {
+    throw new TranslationFailure(
+      'انتهت الجلسة أو مفتاح المزود غير صحيح. حدّث بيانات الاتصال.',
+    );
+  }
+  if (status === 403) {
+    throw new TranslationFailure(
       'رفض المزود الطلب. افتح موقعه لإكمال تسجيل الدخول أو تحقق من صلاحيات الحساب.',
-    );}
-  if (status === 429)
-    {throw new TranslationFailure('وصلت إلى حد استخدام المزود. انتظر قليلًا أو اختر مزودًا آخر.');}
+    );
+  }
+  if (status === 429) {
+    throw new TranslationFailure(
+      'وصلت إلى حد استخدام المزود. انتظر قليلًا أو اختر مزودًا آخر.',
+    );
+  }
   throw new TranslationFailure(`تعذر الاتصال بالمزود (HTTP ${status}).`);
 };
 
@@ -73,16 +87,26 @@ export const httpSend = async (
     body?: string;
     headers?: Record<string, string>;
     timeoutMs?: number;
+    signal?: AbortSignal;
     accept?: string;
     contentType?: string;
   } = {},
 ): Promise<TransportResponse> => {
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  init.signal?.addEventListener('abort', abort, { once: true });
+  if (init.signal?.aborted) controller.abort();
   const timer = setTimeout(() => controller.abort(), init.timeoutMs ?? 60_000);
   try {
-    const headers: Record<string, string> = { Accept: init.accept ?? 'application/json' };
-    if (init.body !== undefined) headers['Content-Type'] = init.contentType ?? 'application/json';
-    if (init.headers) for (const [k, v] of Object.entries(init.headers)) headers[k] = v;
+    const headers: Record<string, string> = {
+      Accept: init.accept ?? 'application/json',
+    };
+    if (init.body !== undefined) {
+      headers['Content-Type'] = init.contentType ?? 'application/json';
+    }
+    if (init.headers) {
+      for (const [k, v] of Object.entries(init.headers)) headers[k] = v;
+    }
     const response = await fetch(url, {
       method: init.method ?? 'GET',
       headers,
@@ -106,11 +130,16 @@ export const httpSend = async (
   } catch (error) {
     if (error instanceof TranslationFailure) throw error;
     if (error instanceof Error && error.name === 'AbortError') {
-      throw new TranslationFailure('انتهت مهلة الاتصال بالمزود. أعد المحاولة أو اختر مزودًا آخر.');
+      throw new TranslationFailure(
+        'انتهت مهلة الاتصال بالمزود. أعد المحاولة أو اختر مزودًا آخر.',
+      );
     }
-    throw new TranslationFailure('تعذر الوصول إلى خدمة الترجمة. تحقق من الشبكة.');
+    throw new TranslationFailure(
+      'تعذر الوصول إلى خدمة الترجمة. تحقق من الشبكة.',
+    );
   } finally {
     clearTimeout(timer);
+    init.signal?.removeEventListener('abort', abort);
   }
 };
 
@@ -119,13 +148,40 @@ export const httpObject = async (
   init?: Parameters<typeof httpSend>[1],
 ): Promise<unknown> => {
   const response = await httpSend(url, init);
-  validateStatus(response.status);
+  if (response.status < 200 || response.status >= 300) {
+    let detail = '';
+    try {
+      const error = JSON.parse(response.text)?.error;
+      if (typeof error?.status === 'string') detail = error.status;
+      if (typeof error?.message === 'string') detail += ': ' + error.message;
+      if (init?.headers) {
+        for (const value of Object.values(init.headers)) {
+          if (value) {
+            detail = detail.split(value).join('[redacted]');
+            const token = value.replace(/^Bearer\s+/i, '');
+            if (token) detail = detail.split(token).join('[redacted]');
+          }
+        }
+      }
+    } catch {
+      /* use status-specific message */
+    }
+    try {
+      validateStatus(response.status);
+    } catch (error) {
+      throw new TranslationFailure(
+        (error as Error).message + (detail ? ' ' + detail.slice(0, 500) : ''),
+      );
+    }
+  }
   // Redirect guard (stands in for AIRedirectPolicy): the endpoint we called
   // must be the endpoint that answered, or we refuse to parse the payload.
   const called = new URL(url);
   const answered = new URL(response.url);
   if (answered.origin !== called.origin) {
-    throw new TranslationFailure('أعاد المزود توجيهًا غير متوقع؛ أُلغي الطلب حمايةً لبياناتك.');
+    throw new TranslationFailure(
+      'أعاد المزود توجيهًا غير متوقع؛ أُلغي الطلب حمايةً لبياناتك.',
+    );
   }
   try {
     return JSON.parse(response.text);
@@ -139,7 +195,13 @@ export const httpObject = async (
 export const encodeForm = (values: Record<string, string>): string =>
   Object.keys(values)
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(key => `${encodeURIComponent(key)}=${encodeURIComponent(values[key]).replace(/\+/g, '%2B')}`)
+    .map(
+      key =>
+        `${encodeURIComponent(key)}=${encodeURIComponent(values[key]).replace(
+          /\+/g,
+          '%2B',
+        )}`,
+    )
     .join('&');
 
 // Multi-value form (Google batch: repeated q= parameters, order preserved).
@@ -147,7 +209,10 @@ export const encodeFormValues = (pairs: [string, string][]): string =>
   pairs
     .map(
       ([key, value]) =>
-        `${encodeURIComponent(key)}=${encodeURIComponent(value).replace(/\+/g, '%2B')}`,
+        `${encodeURIComponent(key)}=${encodeURIComponent(value).replace(
+          /\+/g,
+          '%2B',
+        )}`,
     )
     .join('&');
 
@@ -158,7 +223,12 @@ export const parseGoogleRPC = (data: string, id: string): unknown[] => {
   const visit = (value: unknown): void => {
     if (!Array.isArray(value)) return;
     const a = value as unknown[];
-    if (a.length > 2 && a[0] === 'wrb.fr' && a[1] === id && typeof a[2] === 'string') {
+    if (
+      a.length > 2 &&
+      a[0] === 'wrb.fr' &&
+      a[1] === id &&
+      typeof a[2] === 'string'
+    ) {
       try {
         out.push(JSON.parse(a[2]));
       } catch {
@@ -182,7 +252,9 @@ export const parseGoogleRPC = (data: string, id: string): unknown[] => {
 export const nested = (value: unknown, path: number[]): unknown => {
   let result: unknown = value;
   for (const index of path) {
-    if (!Array.isArray(result) || (result as unknown[]).length <= index) return null;
+    if (!Array.isArray(result) || (result as unknown[]).length <= index) {
+      return null;
+    }
     result = (result as unknown[])[index];
   }
   return result ?? null;

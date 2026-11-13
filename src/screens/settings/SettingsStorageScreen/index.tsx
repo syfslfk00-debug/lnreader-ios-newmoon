@@ -101,8 +101,9 @@ const SettingsStorageScreen = () => {
 
   const [categoryToDelete, setCategoryToDelete] =
     useState<StorageCategory | null>(null);
-  const [novelToDelete, setNovelToDelete] =
-    useState<NovelStorageEntry | null>(null);
+  const [novelToDelete, setNovelToDelete] = useState<NovelStorageEntry | null>(
+    null,
+  );
 
   const [translationRows, setTranslationRows] = useState<TranslationRow[]>([]);
   const [translationBusy, setTranslationBusy] = useState<string | null>(null);
@@ -167,7 +168,7 @@ const SettingsStorageScreen = () => {
   }, [refreshTranslations]);
 
   const rebuildable = useMemo(
-    () => overview?.categories.filter(c => c.rebuildable) ?? [],
+    () => overview?.categories.filter(c => c.rebuildable && !c.logical) ?? [],
     [overview],
   );
   const totalRebuildable = useMemo(
@@ -197,7 +198,9 @@ const SettingsStorageScreen = () => {
           }),
         );
       } else {
-        showToast(getString('storage.deleted', { freed: formatBytes(freedBytes) }));
+        showToast(
+          getString('storage.deleted', { freed: formatBytes(freedBytes) }),
+        );
       }
       void expected; // real freed bytes are always reported, not the estimate
     } catch (e) {
@@ -227,7 +230,9 @@ const SettingsStorageScreen = () => {
       if (errors.length) {
         showToast(getString('storage.novelDeleteIncomplete'));
       } else {
-        showToast(getString('storage.deleted', { freed: formatBytes(freedBytes) }));
+        showToast(
+          getString('storage.deleted', { freed: formatBytes(freedBytes) }),
+        );
       }
     } catch (e) {
       showToast(
@@ -276,7 +281,10 @@ const SettingsStorageScreen = () => {
         ]}
       >
         <View
-          style={[styles.categoryIcon, { backgroundColor: meta.color(theme) + '22' }]}
+          style={[
+            styles.categoryIcon,
+            { backgroundColor: meta.color(theme) + '22' },
+          ]}
         >
           <MaterialCommunityIcons
             name={meta.icon as never}
@@ -287,10 +295,15 @@ const SettingsStorageScreen = () => {
         <View style={styles.categoryText}>
           <Text style={[styles.categoryName, { color: theme.onSurface }]}>
             {getString(
-              `storage.category.${category.id}` as Extract<keyof StringMap, `storage.category.${StorageCategoryId}`>,
+              `storage.category.${category.id}` as Extract<
+                keyof StringMap,
+                `storage.category.${StorageCategoryId}`
+              >,
             )}
           </Text>
-          <Text style={[styles.categorySize, { color: theme.onSurfaceVariant }]}>
+          <Text
+            style={[styles.categorySize, { color: theme.onSurfaceVariant }]}
+          >
             {formatBytes(category.bytes)}
             {category.files > 0
               ? `  ·  ${category.files} ${getString('storage.files')}`
@@ -353,7 +366,10 @@ const SettingsStorageScreen = () => {
             <View
               style={[
                 styles.deviceBarSegment,
-                { backgroundColor: theme.primary, flex: Math.max(deviceUsed, 1) },
+                {
+                  backgroundColor: theme.primary,
+                  flex: Math.max(deviceUsed, 1),
+                },
               ]}
             />
             <View
@@ -492,7 +508,9 @@ const SettingsStorageScreen = () => {
                 key={`${novel.pluginId}-${novel.novelId}`}
                 style={[
                   styles.novelRow,
-                  { backgroundColor: theme.surfaceContainerLow ?? theme.surface },
+                  {
+                    backgroundColor: theme.surfaceContainerLow ?? theme.surface,
+                  },
                 ]}
               >
                 <View style={styles.novelText}>
@@ -542,9 +560,7 @@ const SettingsStorageScreen = () => {
           categoryToDelete
             ? getString('storage.confirmDeleteCategory', {
                 name: getString(
-                  `storage.category.${
-                    categoryToDelete.id
-                  }` as Extract<
+                  `storage.category.${categoryToDelete.id}` as Extract<
                     keyof StringMap,
                     `storage.category.${StorageCategoryId}`
                   >,

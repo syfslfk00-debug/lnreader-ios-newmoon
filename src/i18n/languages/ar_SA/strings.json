@@ -207,7 +207,8 @@
     "selfHostDesc": "نسخ احتياطي إلى خادمك الخاص",
     "uploadingData": "رفع البيانات",
     "uploadingSelectedFiles": "جارٍ رفع الملفات المحددة",
-    "uploadingDownloadedFiles": "رفع الملفات المحملة"
+    "uploadingDownloadedFiles": "رفع الملفات المحملة",
+    "googleSetupRequired": "تسجيل الدخول إلى Google Drive غير متاح في هذه النسخة. يحتاج مطوّر التطبيق إلى إعداد تسجيل الدخول لنظام iOS."
   },
   "browse": "تصفح",
   "browseScreen": {

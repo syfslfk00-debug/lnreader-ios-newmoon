@@ -38,11 +38,17 @@ export class InMemoryMemoryDriver implements MemoryDriver {
 
   queryCount = 0;
 
-  async execute(sql: string, params?: (string | number | null)[]): Promise<void> {
+  async execute(
+    sql: string,
+    params?: (string | number | null)[],
+  ): Promise<void> {
     this.run(sql, params ?? []);
   }
 
-  async query<T>(sql: string, params?: (string | number | null)[]): Promise<T[]> {
+  async query<T>(
+    sql: string,
+    params?: (string | number | null)[],
+  ): Promise<T[]> {
     this.queryCount += 1;
     if (sql.includes('SELECT text FROM translations WHERE key')) {
       const row = this.translations.get(String(params?.[0]));
@@ -53,7 +59,10 @@ export class InMemoryMemoryDriver implements MemoryDriver {
       for (const row of this.translations.values()) bytes += row.bytes;
       return [{ entries: this.translations.size, bytes }] as unknown as T[];
     }
-    if (sql.includes('FROM translation_refs') && sql.includes('GROUP BY r.novelId')) {
+    if (
+      sql.includes('FROM translation_refs') &&
+      sql.includes('GROUP BY r.novelId')
+    ) {
       // Mirrors: SELECT novelId, COUNT(*), COALESCE(SUM(t.bytes),0) ... LEFT JOIN
       const groups = new Map<string, { count: number; bytes: number }>();
       for (const [key, ref] of this.refs.entries()) {
@@ -112,7 +121,11 @@ export class InMemoryMemoryDriver implements MemoryDriver {
       if (row) row.used = Number(params[0]);
       return;
     }
-    if (sql.startsWith('DELETE FROM translations WHERE key IN (SELECT key FROM translation_refs')) {
+    if (
+      sql.startsWith(
+        'DELETE FROM translations WHERE key IN (SELECT key FROM translation_refs',
+      )
+    ) {
       const novelId = String(params[0] ?? '');
       const chapterId = params.length > 1 ? String(params[1]) : null;
       for (const [key, ref] of this.refs.entries()) {
@@ -132,7 +145,10 @@ export class InMemoryMemoryDriver implements MemoryDriver {
       const novelId = String(params[0] ?? '');
       const chapterId = params.length > 1 ? String(params[1]) : null;
       for (const [key, ref] of this.refs.entries()) {
-        if (ref.novelId === novelId && (chapterId === null || ref.chapterId === chapterId)) {
+        if (
+          ref.novelId === novelId &&
+          (chapterId === null || ref.chapterId === chapterId)
+        ) {
           this.refs.delete(key);
         }
       }
@@ -142,7 +158,9 @@ export class InMemoryMemoryDriver implements MemoryDriver {
   // Mirrors: DELETE FROM translations ORDER BY used LIMIT MAX(256, COUNT/4).
   private evictOldest(): void {
     const limit = Math.max(256, Math.floor(this.translations.size / 4));
-    const ordered = [...this.translations.entries()].sort((a, b) => a[1].used - b[1].used);
+    const ordered = [...this.translations.entries()].sort(
+      (a, b) => a[1].used - b[1].used,
+    );
     for (const [key] of ordered.slice(0, limit)) this.translations.delete(key);
   }
 }
@@ -154,8 +172,16 @@ export const makeFakeTranslate = (
   prefix: string,
 ): jest.MockedFunction<typeof translateSegments> =>
   jest.fn(
-    async (segments: TranslationSegment[]): Promise<TranslationSegment[]> =>
-      segments.map(segment => ({ id: segment.id, text: `${prefix}${segment.text}` })),
+    async (
+      segments: TranslationSegment[],
+      context,
+    ): Promise<TranslationSegment[]> => {
+      context.onRequest?.();
+      return segments.map(segment => ({
+        id: segment.id,
+        text: `${prefix}${segment.text}`,
+      }));
+    },
   ) as unknown as jest.MockedFunction<typeof translateSegments>;
 
 // Drains the microtask queue in bounded macrotask steps so async coordinator
@@ -170,7 +196,10 @@ export const flushAsync = async (rounds = 32): Promise<void> => {
 
 // Resolves as soon as the predicate holds, with a hard iteration cap.
 // Returns the final predicate value so callers can assert on it.
-export const waitUntil = async (predicate: () => boolean, rounds = 400): Promise<boolean> => {
+export const waitUntil = async (
+  predicate: () => boolean,
+  rounds = 400,
+): Promise<boolean> => {
   for (let round = 0; round < rounds; round += 1) {
     if (predicate()) return true;
     await new Promise<void>(resolve => {

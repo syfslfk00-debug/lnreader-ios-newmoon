@@ -47,7 +47,9 @@ export const getDownloadProgressKey = (
     .join('|');
 
 export const getBackgroundTaskQueueName = (task: BackgroundTask) =>
-  task.name === 'DOWNLOAD_CHAPTER'
+  /_(BACKUP|RESTORE)$/.test(task.name)
+    ? `${BACKGROUND_TASK_QUEUE_PREFIX}:backup`
+    : task.name === 'DOWNLOAD_CHAPTER'
     ? `${BACKGROUND_TASK_QUEUE_PREFIX}:download:${
         task.data.pluginId || 'legacy'
       }`

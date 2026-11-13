@@ -90,8 +90,13 @@ export const readDir = async (parentId: string, marked?: boolean) => {
   }
   let hasNextPage = true;
   while (hasNextPage) {
-    const query = pageToken ? q + ` and pageToken = '${pageToken}'` : q;
-    const { nextPageToken, files } = await list({ q: query });
+    const { nextPageToken, files } = await list({
+      q,
+      pageToken: pageToken || undefined,
+    });
+    if (nextPageToken && nextPageToken === pageToken) {
+      throw new Error('Google Drive returned a repeated page token');
+    }
     if (!nextPageToken) {
       hasNextPage = false;
     } else {

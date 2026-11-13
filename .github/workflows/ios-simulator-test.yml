@@ -12,9 +12,10 @@ name: iOS Simulator Test
 # ---------------------------------------------------------------------------
 
 on:
+  workflow_call:
   workflow_dispatch:
   workflow_run:
-    workflows: ["iOS IPA Build"]
+    workflows: ['iOS IPA Build']
     types: [completed]
 
 concurrency:
@@ -28,6 +29,7 @@ permissions:
 env:
   CI: 'true'
   EXPO_NO_TELEMETRY: '1'
+  GOOGLE_IOS_CLIENT_ID: ${{ vars.GOOGLE_IOS_CLIENT_ID }}
   BUNDLE_ID: com.rajarsheechatterjee.LNReader
   SIM_NAME: lnreader-test-device
 
@@ -35,7 +37,7 @@ jobs:
   await-ipa:
     name: Gate on IPA build success
     if: >-
-      github.event_name == 'workflow_dispatch' ||
+      github.event_name != 'workflow_run' ||
       github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 5
@@ -49,8 +51,8 @@ jobs:
           test "${{ github.event.workflow_run.conclusion }}" = "success"
 
       - name: Manual dispatch (workflow_dispatch)
-        if: github.event_name == 'workflow_dispatch'
-        run: echo "Manual run on ${{ github.ref_name }} — upstream gate not applicable"
+        if: github.event_name != 'workflow_run'
+        run: echo "Manual or reusable run on ${{ github.ref_name }} — caller gates the IPA build"
 
   simulator-test:
     name: Simulator (light iPhone, iPad fallback) · interaction tests

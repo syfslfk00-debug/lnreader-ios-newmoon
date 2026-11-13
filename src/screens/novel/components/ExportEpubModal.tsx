@@ -1,3 +1,4 @@
+import { isPickerCancellation } from '@utils/fileErrors';
 import React, { useState } from 'react';
 import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { HelperText, TextInput } from 'react-native-paper';
@@ -141,6 +142,7 @@ const ExportEpubModal: React.FC<ExportEpubModalProps> = ({
       const result = await NativeFile.pickDirectory();
       setUri(result.uri);
     } catch (error) {
+      if (isPickerCancellation(error)) return;
       showToast(error instanceof Error ? error.message : String(error));
     }
   };

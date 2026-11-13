@@ -6,13 +6,18 @@ const path = require('path');
 const ROOT = path.join(__dirname, '..', 'src', 'i18n', 'languages');
 
 const EN = {
+  backupScreen: {
+    googleSetupRequired:
+      'Google Drive sign-in is unavailable in this build. The app maintainer needs to configure Google sign-in for iOS.',
+  },
   translationScreen: {
     autoHeader: 'Automatic translation',
     autoMaster: 'Translate foreign content automatically',
     autoMasterDesc:
       'Detects the content language and starts translating when it differs from the target language — no button press needed.',
     autoScopeMetadata: 'Novel titles and summaries',
-    autoScopeMetadataDesc: 'Search results, source lists and the novel details page.',
+    autoScopeMetadataDesc:
+      'Search results, source lists and the novel details page.',
     autoScopeReader: 'Chapter content in the reader',
     autoScopeReaderDesc: 'Starts translating a chapter as soon as it opens.',
     autoScopeBrowser: 'Internal browser pages',
@@ -32,7 +37,8 @@ const EN = {
     budgetLimit: 'Daily request limit',
     budgetLimitOff: 'No limit',
     budgetReset: 'Reset counters',
-    budgetResetMessage: 'Reset the request and token counters? Saved translations are not affected.',
+    budgetResetMessage:
+      'Reset the request and token counters? Saved translations are not affected.',
     budgetResetDone: 'Counters were reset',
     importFile: 'Import connection data from file',
     importFileTitle: 'Import from file',
@@ -47,7 +53,8 @@ const EN = {
     importInvalid: 'No valid credentials were found in this file.',
     importTooLarge: 'This file is too large.',
     importReadError: 'Could not read the file.',
-    importSecurityNote: 'Stored in the iOS Keychain. Never uploaded to any server.',
+    importSecurityNote:
+      'Stored in the iOS Keychain. Never uploaded to any server.',
     importWebWarning:
       'Web-account protocols (ChatGPT/Gemini sessions) are unofficial and may stop working; an official API key is more stable.',
     metadataHeader: 'Novel metadata translation',
@@ -56,7 +63,8 @@ const EN = {
     titleModeOriginal: 'Original only',
     titleModeBoth: 'Arabic with original below',
     chapterTitles: 'Translate chapter titles',
-    chapterTitlesDesc: 'Adds chapter names in lists to the translation pipeline.',
+    chapterTitlesDesc:
+      'Adds chapter names in lists to the translation pipeline.',
     showOriginal: 'Show original',
     showTranslation: 'Show translation',
     retranslateSummary: 'Re-translate',
@@ -76,6 +84,10 @@ const EN = {
 };
 
 const AR = {
+  backupScreen: {
+    googleSetupRequired:
+      'تسجيل الدخول إلى Google Drive غير متاح في هذه النسخة. يحتاج مطوّر التطبيق إلى إعداد تسجيل الدخول لنظام iOS.',
+  },
   translationScreen: {
     autoHeader: 'الترجمة التلقائية',
     autoMaster: 'ترجمة المحتوى الأجنبي تلقائيًا',
@@ -101,7 +113,8 @@ const AR = {
     budgetLimit: 'حد يومي للطلبات',
     budgetLimitOff: 'بدون حد',
     budgetReset: 'تصفير العدادات',
-    budgetResetMessage: 'تصفير عدادات الطلبات والرموز؟ الترجمات المحفوظة لا تتأثر.',
+    budgetResetMessage:
+      'تصفير عدادات الطلبات والرموز؟ الترجمات المحفوظة لا تتأثر.',
     budgetResetDone: 'تم تصفير العدادات',
     importFile: 'استيراد بيانات الاتصال من ملف',
     importFileTitle: 'استيراد من ملف',

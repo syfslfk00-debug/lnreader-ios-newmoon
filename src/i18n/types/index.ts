@@ -181,6 +181,7 @@ export interface StringMap {
   'backupScreen.uploadingData': 'string';
   'backupScreen.uploadingSelectedFiles': 'string';
   'backupScreen.uploadingDownloadedFiles': 'string';
+  'backupScreen.googleSetupRequired': 'string';
   'browse': 'string';
   'browseScreen.addedToLibrary': 'string';
   'browseScreen.available': 'string';

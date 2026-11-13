@@ -1,3 +1,4 @@
+import { useWebViewScrollProbe } from '../../testing/useWebViewScrollProbe';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Modal, Pressable, StyleSheet, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -51,6 +52,7 @@ const WebviewScreen = ({ route, navigation }: WebviewScreenProps) => {
   const userAgent = useMemo(() => getUserAgent(), []);
 
   const theme = useTheme();
+  const scrollProbe = useWebViewScrollProbe();
   const insets = useSafeAreaInsets();
   const webViewRef = useRef<WebView<object> | null>(null);
 
@@ -75,7 +77,9 @@ const WebviewScreen = ({ route, navigation }: WebviewScreenProps) => {
     const controller = new PageTranslationController({
       inject: command => {
         webViewRef.current?.injectJavaScript(
-          `window.__moonTrReceive && window.__moonTrReceive(${toInjectableLiteral(command)}); true;`,
+          `window.__moonTrReceive && window.__moonTrReceive(${toInjectableLiteral(
+            command,
+          )}); true;`,
         );
       },
       url: () => currentUrlRef.current,
@@ -119,7 +123,11 @@ const WebviewScreen = ({ route, navigation }: WebviewScreenProps) => {
   // The page translator posts enveloped messages ({__moonTr: 1, …}) — routed
   // to the controller FIRST. Every other message keeps the original raw
   // web-storage dump behavior untouched.
-  const handleMessage = ({ nativeEvent }: { nativeEvent: { data: string } }) => {
+  const handleMessage = ({
+    nativeEvent,
+  }: {
+    nativeEvent: { data: string };
+  }) => {
     let parsed: unknown;
     try {
       parsed = JSON.parse(nativeEvent.data);
@@ -198,6 +206,7 @@ const WebviewScreen = ({ route, navigation }: WebviewScreenProps) => {
         userAgent={userAgent}
         ref={webViewRef}
         source={source}
+        decelerationRate="normal"
         setDisplayZoomControls={true}
         setBuiltInZoomControls={false}
         setSupportMultipleWindows={false}
@@ -206,6 +215,7 @@ const WebviewScreen = ({ route, navigation }: WebviewScreenProps) => {
         onLoadProgress={handleLoadProgress}
         onMessage={handleMessage}
       />
+      {scrollProbe.probe}
       {translation.running && translation.error === null ? (
         <View
           style={[
@@ -300,7 +310,9 @@ const WebviewScreen = ({ route, navigation }: WebviewScreenProps) => {
           style={styles.offerScrim}
           onPress={() => translationRef.current?.dismissOffer()}
         >
-          <Pressable style={[styles.offerCard, { backgroundColor: theme.surface }]}>
+          <Pressable
+            style={[styles.offerCard, { backgroundColor: theme.surface }]}
+          >
             <View style={styles.offerHeader}>
               <Text style={[styles.offerTitle, { color: theme.onSurface }]}>
                 ترجمة الصفحة إلى العربية؟

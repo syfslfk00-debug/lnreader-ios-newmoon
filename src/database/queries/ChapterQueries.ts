@@ -198,7 +198,9 @@ const deleteDownloadedFiles = async (
 ) => {
   try {
     const chapterFolder = `${NOVEL_STORAGE}/${pluginId}/${novelId}/${chapterId}`;
-    await NativeFile.unlink(chapterFolder);
+    if (await NativeFile.exists(chapterFolder)) {
+      await NativeFile.unlink(chapterFolder);
+    }
   } catch {
     throw new Error(getString('novelScreen.deleteChapterError'));
   }
@@ -229,21 +231,33 @@ export const deleteChapters = async (
     return;
   }
 
+  const deleted: number[] = [];
+  let failed = 0;
   for (const ids of chunkChapterIds(chapterIds)) {
-    await Promise.all(
-      ids.map(chapterId => deleteDownloadedFiles(pluginId, novelId, chapterId)),
+    const results = await Promise.allSettled(
+      ids.map(id => deleteDownloadedFiles(pluginId, novelId, id)),
+    );
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled') deleted.push(ids[index]);
+      else failed++;
+    });
+  }
+  if (deleted.length) {
+    await dbManager.write(async tx => {
+      for (const ids of chunkChapterIds(deleted)) {
+        await tx
+          .update(chapterSchema)
+          .set({ isDownloaded: false })
+          .where(inArray(chapterSchema.id, ids))
+          .run();
+      }
+    });
+  }
+  if (failed) {
+    throw new Error(
+      getString('novelScreen.deleteChapterError') + ` (${failed})`,
     );
   }
-
-  await dbManager.write(async tx => {
-    for (const ids of chunkChapterIds(chapterIds)) {
-      await tx
-        .update(chapterSchema)
-        .set({ isDownloaded: false })
-        .where(inArray(chapterSchema.id, ids))
-        .run();
-    }
-  });
 };
 
 /** Increases the timeSpent for the specified chapterId by the given amount */

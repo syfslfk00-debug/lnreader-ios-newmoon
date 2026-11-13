@@ -11,7 +11,8 @@ import {
 } from '@services/backgroundTasks';
 import { ScrollView } from 'react-native-gesture-handler';
 import { getString } from '@i18n/translations';
-import { StyleSheet } from 'react-native';
+import { Platform, StyleSheet } from 'react-native';
+import { isPickerCancellation } from '@utils/fileErrors';
 import dayjs from 'dayjs';
 import NativeFile from '@modules/native-file';
 import { useState } from 'react';
@@ -69,8 +70,10 @@ const BackupSettings = ({ navigation }: BackupSettingsScreenProps) => {
     let directory: Awaited<ReturnType<typeof NativeFile.pickDirectory>>;
     try {
       directory = await NativeFile.pickDirectory();
-    } catch {
-      // Closing Android's directory picker intentionally keeps the old location.
+    } catch (error) {
+      if (!isPickerCancellation(error)) {
+        showToast(error instanceof Error ? error.message : String(error));
+      }
       return;
     }
 
@@ -101,6 +104,13 @@ const BackupSettings = ({ navigation }: BackupSettingsScreenProps) => {
       const filename = `lnreader_backup_${dayjs().format(
         'YYYY-MM-DD_HH_mm',
       )}.zip`;
+      if (Platform.OS === 'ios') {
+        backgroundTasks.enqueue({
+          name: 'LOCAL_BACKUP',
+          data: { exportName: filename, options: backupOptions },
+        });
+        return;
+      }
       const destinationUri = await NativeFile.createDocument(
         filename,
         'application/zip',
@@ -109,8 +119,10 @@ const BackupSettings = ({ navigation }: BackupSettingsScreenProps) => {
         name: 'LOCAL_BACKUP',
         data: { destinationUri, options: backupOptions },
       });
-    } catch {
-      // Closing Android's document picker intentionally leaves the queue unchanged.
+    } catch (error) {
+      if (!isPickerCancellation(error)) {
+        showToast(error instanceof Error ? error.message : String(error));
+      }
     }
   };
 
@@ -121,8 +133,10 @@ const BackupSettings = ({ navigation }: BackupSettingsScreenProps) => {
         name: 'LOCAL_RESTORE',
         data: { sourceUri },
       });
-    } catch {
-      // Closing Android's document picker intentionally leaves the queue unchanged.
+    } catch (error) {
+      if (!isPickerCancellation(error)) {
+        showToast(error instanceof Error ? error.message : String(error));
+      }
     }
   };
 

@@ -57,7 +57,7 @@ jobs:
   simulator-test:
     name: Simulator (light iPhone, iPad fallback) · interaction tests
     needs: await-ipa
-    runs-on: macos-15
+    runs-on: macos-15-intel
     timeout-minutes: 150
 
     steps:

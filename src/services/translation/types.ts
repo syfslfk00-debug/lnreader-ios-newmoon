@@ -1,4 +1,7 @@
-import type { AIProviderConfiguration, CloudflareTranslationConfiguration } from './providerTypes';
+import type {
+  AIProviderConfiguration,
+  CloudflareTranslationConfiguration,
+} from './providerTypes';
 
 // Ported from Zeus Ascent Edition: ZEUSNext/TranslationData.swift (branch
 // edition/ascent-parity-20261101, commit 71023ca). Engine enum, preferences and
@@ -162,7 +165,7 @@ export const streamsLargeBatches = (
 ): boolean =>
   prefs.engine === 'ai' &&
   prefs.aiStreaming === true &&
-  provider?.kind === 'openAICompatible';
+  (provider?.kind === 'openAICompatible' || provider?.kind === 'geminiAPI');
 
 export const secretKey = (
   prefs: TranslationPreferences,

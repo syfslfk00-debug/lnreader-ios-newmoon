@@ -23,7 +23,7 @@ import {
   type BackupManifest,
   type ResolvedBackupManifest,
 } from './types';
-import { NOVEL_STORAGE, ROOT_STORAGE } from '@utils/Storages';
+import { NOVEL_STORAGE, PLUGIN_STORAGE, ROOT_STORAGE } from '@utils/Storages';
 import { BACKGROUND_TASKS_STORE_KEY } from '@services/backgroundTasks/constants';
 import type { TaskProgressUpdater } from '@services/backgroundTasks/contracts';
 import NativeFile from '@modules/native-file';
@@ -105,6 +105,10 @@ export const prepareBackupData = async (
 
   await clearBackupCache(cacheDirPath);
   await NativeFile.mkdir(cacheDirPath);
+  // A new installation may have no downloads or installed plugins yet.
+  // Selected empty sections must still produce valid, empty ZIP archives.
+  if (options.downloadedFiles) await NativeFile.mkdir(NOVEL_STORAGE);
+  if (options.plugins) await NativeFile.mkdir(PLUGIN_STORAGE);
 
   // version
   const manifest: BackupManifest = {

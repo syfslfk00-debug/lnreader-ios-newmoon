@@ -1,10 +1,9 @@
 name: iOS IPA Build
 
 # ---------------------------------------------------------------------------
-# ISOLATED PIPELINE: quality gate -> unsigned device IPA.
-# Contains NO simulator steps. If this workflow is green, the IPA artifact
-# is ready for download. Simulator tests live in ios-simulator-test.yml and
-# run independently (their failure never blocks IPA production).
+# Quality gate -> unsigned device IPA -> same-commit simulator verification.
+# IPA artifacts remain downloadable even when the subsequent interaction
+# tests fail. The simulator implementation is a reusable workflow.
 # ---------------------------------------------------------------------------
 
 on:

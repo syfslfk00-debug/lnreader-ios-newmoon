@@ -1219,7 +1219,7 @@
     "aiMaxRequests": "Max model requests per chapter",
     "aiMaxRequestsDesc": "The chapter is sent as one request when possible, then split into large parts. Extra requests beyond this need your approval.",
     "aiStreaming": "Instant translation (streaming)",
-    "aiStreamingDesc": "Show paragraphs as they are generated. OpenAI-compatible providers only.",
+    "aiStreamingDesc": "Show text as it arrives. Supports OpenAI-compatible providers and the official Gemini API.",
     "budgetHeader": "Translation budget",
     "budgetRequests": "AI requests",
     "budgetToday": "today",

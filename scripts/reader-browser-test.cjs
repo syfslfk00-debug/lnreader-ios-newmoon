@@ -114,6 +114,19 @@ async function main() {
       'AI must collect offscreen paragraphs in the same chapter',
     );
     assert(collected.segments[359].text.startsWith('Paragraph 359.'));
+    // An already appended neighbor must not turn one explicit chapter
+    // translation into paid work for every section in the document.
+    await receive({ kind: 'appendChapter', number: 2, html: chapter(2).html });
+    await page.evaluate(() => {
+      window.moonMessages = [];
+    });
+    await receive({ kind: 'trCollect' });
+    const currentOnly = await page.evaluate(() =>
+      window.moonMessages.find(message => message.t === 'trCollect'),
+    );
+    assert.equal(currentOnly.segments.length, 360);
+    assert.equal(currentOnly.more, false);
+    assert(currentOnly.segments.every(segment => segment.chapter === 1));
     const id = collected.segments[0].id;
     await receive({
       kind: 'trApply',
@@ -144,6 +157,15 @@ async function main() {
       (await page.locator('[data-wor-tr-text]').textContent()).includes(
         '«مرحبا بالعالم»',
       ),
+    );
+    await page
+      .locator('#worTextSurface')
+      .evaluate(el => el.setAttribute('data-wor-copy-guard', '1'));
+    assert.equal(
+      await page
+        .locator('[data-wor-tr-text] .bracket-formatted')
+        .evaluate(el => getComputedStyle(el).userSelect),
+      'text',
     );
     assert.equal(
       await page

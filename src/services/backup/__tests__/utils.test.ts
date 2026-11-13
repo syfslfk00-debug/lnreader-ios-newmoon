@@ -59,6 +59,7 @@ jest.mock('@plugins/pluginManager', () => ({
 
 jest.mock('@utils/Storages', () => ({
   NOVEL_STORAGE: '/storage/Novels',
+  PLUGIN_STORAGE: '/storage/Plugins',
   ROOT_STORAGE: '/storage',
 }));
 
@@ -100,6 +101,7 @@ describe('selective backup data', () => {
         '"sections":{"library":false,"settings":false,"plugins":true,"downloadedFiles":false}',
       ),
     );
+    expect(NativeFile.mkdir).toHaveBeenCalledWith('/storage/Plugins');
     expect(getAllNovels).not.toHaveBeenCalled();
     expect(getCategoriesFromDb).not.toHaveBeenCalled();
     expect(NativeFile.writeFile).toHaveBeenCalledWith(

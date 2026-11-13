@@ -88,8 +88,8 @@ export const WOR_APP_CSS = `
   .wor-chapter-divider { border: 0; height: 1px; background: color-mix(in srgb, var(--wor-text) 22%, transparent); margin: 10px 0 26px; }
 
   /* Keep native text selection and copy available on the reading surface. */
-  .wor-reader-text-surface, .wor-chapter-title-block, .wor-chapter-sec {
-    -webkit-user-select: text; user-select: text; -webkit-touch-callout: default;
+  .wor-reader-text-surface, .wor-reader-text-surface *, .wor-chapter-title-block, .wor-chapter-sec {
+    -webkit-user-select: text !important; user-select: text !important; -webkit-touch-callout: default !important;
   }
   .moon-copyright-notice { pointer-events: none; }
 
@@ -1800,11 +1800,13 @@ function bridgeScript() {
     if (!surface) return [];
     var secs = $all('section.wor-chapter-sec[data-ch]', surface);
     var vp = trViewport();
+    var activeChapter = TR.caps ? activeSectionAt(window.scrollY || 0).num : 0;
     var out = [];
     for (var i = 0; i < secs.length; i++) {
       var sec = secs[i];
       if (sec.getAttribute('data-wor-unloaded')) continue; // stashed shell
       var ch = parseInt(sec.getAttribute('data-ch'), 10) || 0;
+      if (activeChapter && ch !== activeChapter) continue;
       var ps = trSectionParagraphs(sec);
       for (var j = 0; j < ps.length; j++) {
         var p = ps[j];

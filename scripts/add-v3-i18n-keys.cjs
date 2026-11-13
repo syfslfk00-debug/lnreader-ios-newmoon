@@ -28,7 +28,7 @@ const EN = {
       'The chapter is sent as one request when possible, then split into large parts. Extra requests beyond this need your approval.',
     aiStreaming: 'Instant translation (streaming)',
     aiStreamingDesc:
-      'Show paragraphs as they are generated. OpenAI-compatible providers only.',
+      'Show text as it arrives. Supports OpenAI-compatible providers and the official Gemini API.',
     budgetHeader: 'Translation budget',
     budgetRequests: 'AI requests',
     budgetToday: 'today',
@@ -104,7 +104,8 @@ const AR = {
     aiMaxRequestsDesc:
       'يُرسل الفصل بطلب واحد إن أمكن، وإلا يُقسم إلى أجزاء كبيرة. الطلبات الزائدة عن هذا الحد تحتاج موافقتك.',
     aiStreaming: 'الترجمة اللحظية (بث تدريجي)',
-    aiStreamingDesc: 'اعرض الفقرات وأنا تُولَّد. لمزودي OpenAI المتوافقين فقط.',
+    aiStreamingDesc:
+      'اعرض النص أثناء وصوله. يدعم مزودي OpenAI المتوافقين وواجهة Gemini الرسمية.',
     budgetHeader: 'ميزانية الترجمة',
     budgetRequests: 'طلبات الذكاء الاصطناعي',
     budgetToday: 'اليوم',
@@ -164,7 +165,10 @@ const merge = (locale, patch) => {
   for (const [section, keys] of Object.entries(patch)) {
     data[section] = data[section] || {};
     for (const [key, value] of Object.entries(keys)) {
-      if (data[section][key] === undefined) {
+      if (
+        data[section][key] === undefined ||
+        (section === 'translationScreen' && key === 'aiStreamingDesc')
+      ) {
         data[section][key] = value;
         added += 1;
       } else if (locale === 'ar' && data[section][key] === value && false) {

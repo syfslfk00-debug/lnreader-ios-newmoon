@@ -3,7 +3,7 @@ name: iOS Simulator Test
 # ---------------------------------------------------------------------------
 # Runs ONLY after a successful iOS IPA build (workflow_run gate) — IPA first,
 # simulator second, per release discipline. Builds the app for the simulator,
-# boots an iPad (7th gen) on iOS 18.5 when available, installs, and runs REAL
+# boots an available iPhone/iPad simulator, installs, and runs REAL
 # interaction tests (XCUITest): onboarding, tab navigation, language switch
 # to Arabic (RTL rebuild), reader tap-to-toggle chrome, color picker.
 #
@@ -57,7 +57,7 @@ jobs:
   simulator-test:
     name: Simulator (light iPhone, iPad fallback) · interaction tests
     needs: await-ipa
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 150
 
     steps:
